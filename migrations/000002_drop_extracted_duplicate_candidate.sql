@@ -1,0 +1,4 @@
+-- Runtime-owned migration notice:
+-- The extraction schema (impact_service_article_extractions / impact_service_aggregated_events) is migrated exclusively by
+-- internal/repository/extraction.Repository.Migrate at application startup in Railway.
+-- This SQL file is intentionally kept as a no-op to avoid dual migration ownership.
