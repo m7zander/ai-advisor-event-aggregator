@@ -42,7 +42,7 @@ func (r *Repository) ListSuccessfulExtractionsSince(ctx context.Context, since t
 
 	const q = `SELECT article_id, extracted_event_type, extracted_geo_cluster, extracted_countries, extracted_sectors, extracted_industries,
 extracted_impact_direction, extracted_impact_strength, extracted_confidence, extraction_finished_at
-FROM impact_service_article_extractions
+FROM event_aggregator_article_extractions
 WHERE extraction_status = $1
   AND extraction_finished_at IS NOT NULL
   AND extraction_finished_at > $2
@@ -139,7 +139,7 @@ func (r *Repository) GetEventByClusterKey(ctx context.Context, clusterKey string
 	const q = `SELECT event_id, cluster_key, event_type, geo_cluster, countries, sectors, industries,
  direction, strength, confidence, status, article_ids, source_count,
  first_seen_at, last_seen_at, created_at, updated_at
-FROM impact_service_aggregated_events
+FROM event_aggregator_aggregated_events
 WHERE cluster_key = $1`
 	row := r.db.QueryRowContext(ctx, q, clusterKey)
 	evt, found, err := scanEventRow(row.Scan)
@@ -159,7 +159,7 @@ func (r *Repository) GetEventByID(ctx context.Context, eventID string) (event.Ev
 	const q = `SELECT event_id, cluster_key, event_type, geo_cluster, countries, sectors, industries,
  direction, strength, confidence, status, article_ids, source_count,
  first_seen_at, last_seen_at, created_at, updated_at
-FROM impact_service_aggregated_events
+FROM event_aggregator_aggregated_events
 WHERE event_id = $1`
 	row := r.db.QueryRowContext(ctx, q, eventID)
 	evt, found, err := scanEventRow(row.Scan)
@@ -195,7 +195,7 @@ func (r *Repository) UpsertEventByClusterKey(ctx context.Context, evt event.Even
 		return fmt.Errorf("marshal article_ids: %w", err)
 	}
 
-	const q = `INSERT INTO impact_service_aggregated_events (
+	const q = `INSERT INTO event_aggregator_aggregated_events (
  event_id, cluster_key, event_type, geo_cluster, countries, sectors, industries,
  direction, strength, confidence, status, article_ids, source_count,
  first_seen_at, last_seen_at, created_at, updated_at
@@ -255,7 +255,7 @@ func (r *Repository) ListEvents(ctx context.Context, limit int, since *time.Time
 	query := `SELECT event_id, cluster_key, event_type, geo_cluster, countries, sectors, industries,
  direction, strength, confidence, status, article_ids, source_count,
  first_seen_at, last_seen_at, created_at, updated_at
-FROM impact_service_aggregated_events`
+FROM event_aggregator_aggregated_events`
 	args := make([]any, 0, 3)
 	clauses := make([]string, 0, 2)
 	if since != nil {
@@ -282,11 +282,11 @@ FROM impact_service_aggregated_events`
 			extractionRepoLogger.ErrorWithContract(ctx, "repository.rows_close_failed", "repository/extraction", "failed to close query rows", cerr, logging.ErrorContract{
 				Failure:        "extraction_repository_rows_close_failed",
 				Cause:          cerr.Error(),
-				SanitizedInput: `{"query_id":"list_impact_service_aggregated_events"}`,
+				SanitizedInput: `{"query_id":"list_event_aggregator_aggregated_events"}`,
 				Reaction:       "rows close failure logged",
 			},
 				logging.Field{Key: "use_case", Value: "list_events"},
-				logging.Field{Key: "query_id", Value: "list_impact_service_aggregated_events"},
+				logging.Field{Key: "query_id", Value: "list_event_aggregator_aggregated_events"},
 			)
 		}
 	}()
@@ -311,10 +311,10 @@ FROM impact_service_aggregated_events`
 }
 
 // GetClusteringCursor loads the last successful clustering run timestamp.
-// The cursor is persisted in impact_service_clustering_state under a fixed key.
+// The cursor is persisted in event_aggregator_clustering_state under a fixed key.
 // It returns cursor timestamp, found flag, and an error when query fails.
 func (r *Repository) GetClusteringCursor(ctx context.Context) (time.Time, bool, error) {
-	const q = `SELECT last_run_at FROM impact_service_clustering_state WHERE state_key = $1`
+	const q = `SELECT last_run_at FROM event_aggregator_clustering_state WHERE state_key = $1`
 	var lastRunAt time.Time
 	if err := r.db.QueryRowContext(ctx, q, clusteringCursorKey).Scan(&lastRunAt); err != nil {
 		if err == sql.ErrNoRows {
@@ -329,7 +329,7 @@ func (r *Repository) GetClusteringCursor(ctx context.Context) (time.Time, bool, 
 // The lastRunAt parameter is normalized to UTC and persisted atomically by key.
 // It returns an error when persistence fails.
 func (r *Repository) SetClusteringCursor(ctx context.Context, lastRunAt time.Time) error {
-	const q = `INSERT INTO impact_service_clustering_state (state_key, last_run_at, updated_at)
+	const q = `INSERT INTO event_aggregator_clustering_state (state_key, last_run_at, updated_at)
 VALUES ($1, $2, $3)
 ON CONFLICT(state_key) DO UPDATE SET
  last_run_at=excluded.last_run_at,

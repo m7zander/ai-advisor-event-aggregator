@@ -16,7 +16,7 @@ import (
 )
 
 const extractionSchemaSetup = `
-CREATE TABLE IF NOT EXISTS impact_service_article_extractions (
+CREATE TABLE IF NOT EXISTS event_aggregator_article_extractions (
     article_id BIGINT PRIMARY KEY,
     extraction_status TEXT NOT NULL,
     extraction_model TEXT NOT NULL,
@@ -37,9 +37,9 @@ CREATE TABLE IF NOT EXISTS impact_service_article_extractions (
     created_at TIMESTAMP NOT NULL,
     updated_at TIMESTAMP NOT NULL
 );
-CREATE UNIQUE INDEX IF NOT EXISTS idx_impact_service_article_extractions_article_id ON impact_service_article_extractions(article_id);
-CREATE INDEX IF NOT EXISTS idx_impact_service_article_extractions_status ON impact_service_article_extractions(extraction_status);
-CREATE TABLE IF NOT EXISTS impact_service_aggregated_events (
+CREATE UNIQUE INDEX IF NOT EXISTS idx_event_aggregator_article_extractions_article_id ON event_aggregator_article_extractions(article_id);
+CREATE INDEX IF NOT EXISTS idx_event_aggregator_article_extractions_status ON event_aggregator_article_extractions(extraction_status);
+CREATE TABLE IF NOT EXISTS event_aggregator_aggregated_events (
     event_id TEXT PRIMARY KEY,
     cluster_key TEXT NOT NULL UNIQUE,
     event_type TEXT NOT NULL,
@@ -58,40 +58,82 @@ CREATE TABLE IF NOT EXISTS impact_service_aggregated_events (
     created_at TIMESTAMP NOT NULL,
     updated_at TIMESTAMP NOT NULL
 );
-CREATE INDEX IF NOT EXISTS idx_impact_service_aggregated_events_last_seen_at ON impact_service_aggregated_events(last_seen_at);
-CREATE INDEX IF NOT EXISTS idx_impact_service_aggregated_events_cluster_key ON impact_service_aggregated_events(cluster_key);
-CREATE TABLE IF NOT EXISTS impact_service_clustering_state (
+CREATE INDEX IF NOT EXISTS idx_event_aggregator_aggregated_events_last_seen_at ON event_aggregator_aggregated_events(last_seen_at);
+CREATE INDEX IF NOT EXISTS idx_event_aggregator_aggregated_events_cluster_key ON event_aggregator_aggregated_events(cluster_key);
+CREATE TABLE IF NOT EXISTS event_aggregator_clustering_state (
     state_key TEXT PRIMARY KEY,
     last_run_at TIMESTAMP NOT NULL,
     updated_at TIMESTAMP NOT NULL
 );
-CREATE UNIQUE INDEX IF NOT EXISTS idx_impact_service_aggregated_events_cluster_key_unique ON impact_service_aggregated_events(cluster_key);`
+CREATE UNIQUE INDEX IF NOT EXISTS idx_event_aggregator_aggregated_events_cluster_key_unique ON event_aggregator_aggregated_events(cluster_key);`
 
 const extractionLegacyRenameSQL = `
-ALTER TABLE IF EXISTS article_extractions RENAME TO impact_service_article_extractions;
-ALTER TABLE IF EXISTS aggregated_events RENAME TO impact_service_aggregated_events;
-ALTER TABLE IF EXISTS clustering_state RENAME TO impact_service_clustering_state;
 DO $$
 BEGIN
+    IF to_regclass('article_extractions') IS NOT NULL
+       AND to_regclass('event_aggregator_article_extractions') IS NULL THEN
+        ALTER TABLE article_extractions RENAME TO event_aggregator_article_extractions;
+    END IF;
+    IF to_regclass('impact_service_article_extractions') IS NOT NULL
+       AND to_regclass('event_aggregator_article_extractions') IS NULL THEN
+        ALTER TABLE impact_service_article_extractions RENAME TO event_aggregator_article_extractions;
+    END IF;
+    IF to_regclass('aggregated_events') IS NOT NULL
+       AND to_regclass('event_aggregator_aggregated_events') IS NULL THEN
+        ALTER TABLE aggregated_events RENAME TO event_aggregator_aggregated_events;
+    END IF;
+    IF to_regclass('impact_service_aggregated_events') IS NOT NULL
+       AND to_regclass('event_aggregator_aggregated_events') IS NULL THEN
+        ALTER TABLE impact_service_aggregated_events RENAME TO event_aggregator_aggregated_events;
+    END IF;
+    IF to_regclass('clustering_state') IS NOT NULL
+       AND to_regclass('event_aggregator_clustering_state') IS NULL THEN
+        ALTER TABLE clustering_state RENAME TO event_aggregator_clustering_state;
+    END IF;
+    IF to_regclass('impact_service_clustering_state') IS NOT NULL
+       AND to_regclass('event_aggregator_clustering_state') IS NULL THEN
+        ALTER TABLE impact_service_clustering_state RENAME TO event_aggregator_clustering_state;
+    END IF;
+
     IF to_regclass('idx_article_extractions_article_id') IS NOT NULL
-       AND to_regclass('idx_impact_service_article_extractions_article_id') IS NULL THEN
-        ALTER INDEX idx_article_extractions_article_id RENAME TO idx_impact_service_article_extractions_article_id;
+       AND to_regclass('idx_event_aggregator_article_extractions_article_id') IS NULL THEN
+        ALTER INDEX idx_article_extractions_article_id RENAME TO idx_event_aggregator_article_extractions_article_id;
+    END IF;
+    IF to_regclass('idx_impact_service_article_extractions_article_id') IS NOT NULL
+       AND to_regclass('idx_event_aggregator_article_extractions_article_id') IS NULL THEN
+        ALTER INDEX idx_impact_service_article_extractions_article_id RENAME TO idx_event_aggregator_article_extractions_article_id;
     END IF;
     IF to_regclass('idx_article_extractions_status') IS NOT NULL
-       AND to_regclass('idx_impact_service_article_extractions_status') IS NULL THEN
-        ALTER INDEX idx_article_extractions_status RENAME TO idx_impact_service_article_extractions_status;
+       AND to_regclass('idx_event_aggregator_article_extractions_status') IS NULL THEN
+        ALTER INDEX idx_article_extractions_status RENAME TO idx_event_aggregator_article_extractions_status;
+    END IF;
+    IF to_regclass('idx_impact_service_article_extractions_status') IS NOT NULL
+       AND to_regclass('idx_event_aggregator_article_extractions_status') IS NULL THEN
+        ALTER INDEX idx_impact_service_article_extractions_status RENAME TO idx_event_aggregator_article_extractions_status;
     END IF;
     IF to_regclass('idx_aggregated_events_last_seen_at') IS NOT NULL
-       AND to_regclass('idx_impact_service_aggregated_events_last_seen_at') IS NULL THEN
-        ALTER INDEX idx_aggregated_events_last_seen_at RENAME TO idx_impact_service_aggregated_events_last_seen_at;
+       AND to_regclass('idx_event_aggregator_aggregated_events_last_seen_at') IS NULL THEN
+        ALTER INDEX idx_aggregated_events_last_seen_at RENAME TO idx_event_aggregator_aggregated_events_last_seen_at;
+    END IF;
+    IF to_regclass('idx_impact_service_aggregated_events_last_seen_at') IS NOT NULL
+       AND to_regclass('idx_event_aggregator_aggregated_events_last_seen_at') IS NULL THEN
+        ALTER INDEX idx_impact_service_aggregated_events_last_seen_at RENAME TO idx_event_aggregator_aggregated_events_last_seen_at;
     END IF;
     IF to_regclass('idx_aggregated_events_cluster_key') IS NOT NULL
-       AND to_regclass('idx_impact_service_aggregated_events_cluster_key') IS NULL THEN
-        ALTER INDEX idx_aggregated_events_cluster_key RENAME TO idx_impact_service_aggregated_events_cluster_key;
+       AND to_regclass('idx_event_aggregator_aggregated_events_cluster_key') IS NULL THEN
+        ALTER INDEX idx_aggregated_events_cluster_key RENAME TO idx_event_aggregator_aggregated_events_cluster_key;
+    END IF;
+    IF to_regclass('idx_impact_service_aggregated_events_cluster_key') IS NOT NULL
+       AND to_regclass('idx_event_aggregator_aggregated_events_cluster_key') IS NULL THEN
+        ALTER INDEX idx_impact_service_aggregated_events_cluster_key RENAME TO idx_event_aggregator_aggregated_events_cluster_key;
     END IF;
     IF to_regclass('idx_aggregated_events_cluster_key_unique') IS NOT NULL
-       AND to_regclass('idx_impact_service_aggregated_events_cluster_key_unique') IS NULL THEN
-        ALTER INDEX idx_aggregated_events_cluster_key_unique RENAME TO idx_impact_service_aggregated_events_cluster_key_unique;
+       AND to_regclass('idx_event_aggregator_aggregated_events_cluster_key_unique') IS NULL THEN
+        ALTER INDEX idx_aggregated_events_cluster_key_unique RENAME TO idx_event_aggregator_aggregated_events_cluster_key_unique;
+    END IF;
+    IF to_regclass('idx_impact_service_aggregated_events_cluster_key_unique') IS NOT NULL
+       AND to_regclass('idx_event_aggregator_aggregated_events_cluster_key_unique') IS NULL THEN
+        ALTER INDEX idx_impact_service_aggregated_events_cluster_key_unique RENAME TO idx_event_aggregator_aggregated_events_cluster_key_unique;
     END IF;
 END $$;`
 
@@ -188,16 +230,16 @@ func (r *Repository) applyLegacySchemaFixups(ctx context.Context) error {
 		statement string
 	}{
 		{
-			tableName: "impact_service_aggregated_events",
-			statement: `ALTER TABLE impact_service_aggregated_events ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'active'`,
+			tableName: "event_aggregator_aggregated_events",
+			statement: `ALTER TABLE event_aggregator_aggregated_events ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'active'`,
 		},
 		{
-			tableName: "impact_service_aggregated_events",
-			statement: `ALTER TABLE impact_service_aggregated_events ADD COLUMN IF NOT EXISTS industries TEXT NOT NULL DEFAULT '[]'`,
+			tableName: "event_aggregator_aggregated_events",
+			statement: `ALTER TABLE event_aggregator_aggregated_events ADD COLUMN IF NOT EXISTS industries TEXT NOT NULL DEFAULT '[]'`,
 		},
 		{
-			tableName: "impact_service_article_extractions",
-			statement: `ALTER TABLE impact_service_article_extractions ADD COLUMN IF NOT EXISTS extracted_industries TEXT NULL`,
+			tableName: "event_aggregator_article_extractions",
+			statement: `ALTER TABLE event_aggregator_article_extractions ADD COLUMN IF NOT EXISTS extracted_industries TEXT NULL`,
 		},
 	}
 	for _, fixup := range legacyFixups {
@@ -262,7 +304,7 @@ func (r *Repository) ClaimPending(ctx context.Context, articleID int64, model st
 	}
 
 	const q = `
-INSERT INTO impact_service_article_extractions (
+INSERT INTO event_aggregator_article_extractions (
   article_id, extraction_status, extraction_model, extraction_started_at, extraction_finished_at, extraction_error,
   extracted_event_type, extracted_geo_cluster, extracted_countries, extracted_companies, extracted_sectors,
   extracted_industries, extracted_impact_direction, extracted_impact_strength, extracted_channels, extracted_time_horizon,
@@ -318,7 +360,7 @@ func (r *Repository) UpsertPending(ctx context.Context, articleID int64, model s
 		return fmt.Errorf("model must not be empty")
 	}
 	const q = `
-INSERT INTO impact_service_article_extractions (
+INSERT INTO event_aggregator_article_extractions (
   article_id, extraction_status, extraction_model, extraction_started_at, extraction_finished_at, extraction_error,
   extracted_event_type, extracted_geo_cluster, extracted_countries, extracted_companies, extracted_sectors,
   extracted_industries, extracted_impact_direction, extracted_impact_strength, extracted_channels, extracted_time_horizon,
@@ -382,7 +424,7 @@ func (r *Repository) UpsertSuccess(ctx context.Context, articleID int64, model s
 	}
 
 	const q = `
-INSERT INTO impact_service_article_extractions (
+INSERT INTO event_aggregator_article_extractions (
   article_id, extraction_status, extraction_model, extraction_started_at, extraction_finished_at, extraction_error,
   extracted_event_type, extracted_geo_cluster, extracted_countries, extracted_companies, extracted_sectors, extracted_industries,
   extracted_impact_direction, extracted_impact_strength, extracted_channels, extracted_time_horizon,
@@ -435,7 +477,7 @@ func (r *Repository) UpsertFailure(ctx context.Context, articleID int64, model s
 		return fmt.Errorf("error message must not be empty")
 	}
 	const q = `
-INSERT INTO impact_service_article_extractions (
+INSERT INTO event_aggregator_article_extractions (
   article_id, extraction_status, extraction_model, extraction_started_at, extraction_finished_at, extraction_error,
   extracted_event_type, extracted_geo_cluster, extracted_countries, extracted_companies, extracted_sectors, extracted_industries,
   extracted_impact_direction, extracted_impact_strength, extracted_channels, extracted_time_horizon,
@@ -466,7 +508,7 @@ func (r *Repository) GetByArticleID(ctx context.Context, articleID int64) (Recor
 extraction_error, extracted_event_type, extracted_geo_cluster, extracted_countries, extracted_companies,
 extracted_sectors, extracted_industries, extracted_impact_direction, extracted_impact_strength, extracted_channels, extracted_time_horizon,
 extracted_confidence, created_at, updated_at
-FROM impact_service_article_extractions WHERE article_id = $1`
+FROM event_aggregator_article_extractions WHERE article_id = $1`
 
 	var rec Record
 	var startedAt, finishedAt sql.NullTime
