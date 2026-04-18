@@ -71,7 +71,7 @@ func main() {
 	openAIModel := os.Getenv("OPENAI_MODEL")
 	openAIBaseURL := os.Getenv("OPENAI_BASE_URL")
 	openAITimeoutMSRaw := os.Getenv("OPENAI_TIMEOUT_MS")
-	dbDSN := os.Getenv("EXTRACT_DB_DSN")
+	dbDSN := os.Getenv("DATABASE_URL")
 	clusterScheduleMinutesRaw := os.Getenv("CLUSTER_SCHEDULE_INTERVAL_MINUTES")
 	otelEndpoint := strings.TrimSpace(os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"))
 	otelServiceName := strings.TrimSpace(os.Getenv("OTEL_SERVICE_NAME"))
@@ -99,10 +99,10 @@ func main() {
 		otelServiceName = "ai-advisor-impact-service"
 	}
 	if dbDSN == "" {
-		fatalf(logger, "EXTRACT_DB_DSN is required")
+		fatalf(logger, "DATABASE_URL is required")
 	}
 	if err := validatePostgresDSN(dbDSN); err != nil {
-		fatalf(logger, "EXTRACT_DB_DSN must be a valid PostgreSQL DSN: %v", err)
+		fatalf(logger, "DATABASE_URL must be a valid PostgreSQL DSN: %v", err)
 	}
 	schedulerCfg, err := appscheduler.ParseConfigFromEnv()
 	if err != nil {
@@ -317,7 +317,7 @@ func fatalf(logger *logging.Logger, format string, args ...any) {
 }
 
 // validatePostgresDSN verifies that dsn follows PostgreSQL DSN formats supported by lib/pq.
-// The dsn parameter is the EXTRACT_DB_DSN value from environment variables.
+// The dsn parameter is the DATABASE_URL value from environment variables.
 // It returns nil for valid PostgreSQL connection strings and an error for invalid or unsupported DSNs.
 // It fails for empty/whitespace-only input to enforce fail-fast startup behavior.
 func validatePostgresDSN(dsn string) error {
