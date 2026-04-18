@@ -33,6 +33,7 @@ import (
 )
 
 const (
+	defaultPort                  = 8080
 	defaultHTTPReadHeaderTimeout = 5 * time.Second
 	defaultHTTPReadTimeout       = 15 * time.Second
 	defaultHTTPWriteTimeout      = 15 * time.Second
@@ -62,7 +63,7 @@ func main() {
 
 	portRaw := os.Getenv("PORT")
 	if portRaw == "" {
-		fatalf(logger, "PORT is required")
+		portRaw = strconv.Itoa(defaultPort)
 	}
 	host := os.Getenv("UPSTREAM_HOST")
 	upstreamPort := os.Getenv("UPSTREAM_PORT")

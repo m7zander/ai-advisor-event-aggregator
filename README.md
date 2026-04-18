@@ -1,270 +1,174 @@
-# AI Advisor Impact Service
+# AI Advisor Event Aggregator Service
 
-Backend-Service zur Verarbeitung von News-Artikeln mit zwei Kernfunktionen:
+Go-Backend-Service zur Verarbeitung von News-Artikeln mit Fokus auf:
 
-1. **Extraktion** strukturierter Event-Daten aus Artikeln.
-2. **Aggregation/Clustering** dieser Events für API-Ausgabe.
+1. **Preprocessing** von Upstream-Artikeln.
+2. **LLM-basierter Extraktion** strukturierter Event-Daten.
+3. **Aggregation/Clustering** persistierter Extraction-Ergebnisse zu API-Events.
 
-Der Service ist ein reiner Go-Backend-Dienst ohne Frontend-Runtime.
+Der Service ist ein reiner Backend-Dienst ohne Frontend.
 
 ## Zweck & Scope
 
-- Holt Artikel über einen Upstream-Service.
-- Führt deterministische Textvorverarbeitung durch.
-- Nutzt ein LLM für Event-Extraktion.
-- Persistiert Extraktions- und Aggregationsergebnisse in PostgreSQL.
-- Stellt HTTP-Endpunkte für Health, Preprocess, Extraktion und Event-Abfrage bereit.
+Im Scope:
+
+- Laden von Artikeln über einen Upstream-Service.
+- Deterministische Textvorverarbeitung.
+- Extraktion strukturierter Events für einzelne oder mehrere Artikel.
+- Persistenz von Extraction- und Aggregationsergebnissen in PostgreSQL.
+- Auslieferung von Health-, Preprocess-, Extraction- und Event-Endpunkten.
 
 Nicht im Scope:
 
-- Authentifizierung/Autorisierung (nicht angefordert).
-- Eigene TLS-Terminierung (läuft hinter Reverse Proxy).
+- Authentifizierung/Autorisierung.
+- Eigene TLS-Terminierung (Betrieb hinter Reverse Proxy).
 
 ## Architektur & Komponenten
 
-- `main.go`: Startup, Konfiguration, Dependency Wiring, Scheduler-Start.
-- `internal/http`: HTTP-Transport, Request-ID-/Forwarded-Header-Middleware, Input-Validierung.
-- `internal/upstream`: Upstream-Client zum Laden von Artikeln.
-- `internal/universe`: Universe-HTTP-Client und Upstream-DTOs.
-- `internal/universe/store`: thread-safe In-Memory Snapshot Store mit einmaligem Startup-Load.
-- `internal/preprocess`: Deterministische Textbereinigung.
-- `internal/app/extraction`: Use-Cases für Einzel-/Batch-Extraktion.
-- `internal/repository/extraction`: Repository + Runtime-Migrationen für Extraktion/Event.
-- `internal/app/events`: Event-Service.
-- `internal/app/events/scheduler`: Scheduler für periodisches Clustering neuer Extraction-Ergebnisse.
-- `internal/app/scheduler`: Polling-/Batch-Scheduler für automatische Extraktionsläufe.
-- `internal/logging`: Strukturierte JSON-Logs.
+- `main.go`: Konfiguration aus ENV, Dependency Wiring, HTTP-Server, Scheduler-Start.
+- `internal/http`: HTTP-Transport, Input-Validierung, Request-ID- und Forwarded-Header-Middleware.
+- `internal/upstream`: Upstream-Client zum Abruf von Artikeln.
+- `internal/preprocess`: deterministische Textbereinigung.
+- `internal/app/extraction`: Extraction-Use-Cases (single/batch + Persistenz).
+- `internal/app/events`: Clustering/Aggregation und Event-Abfrage.
+- `internal/app/events/scheduler`: periodisches Clustering neuer Extraction-Ergebnisse.
+- `internal/app/scheduler`: optionaler Polling-/Batch-Scheduler für automatische Extraktionsläufe.
+- `internal/repository/extraction`: PostgreSQL-Repository und Migrationen für Extraction/Event.
+- `internal/logging`: strukturierte Logs.
+- `internal/observability`: Tracing-Utilities.
 
-### Scheduler-Gegenüberstellung
+## Request Flow
 
-1. `internal/app/scheduler`
-   - Zweck: automatische Extraktionsläufe (Polling + Batch-Dispatch).
-   - Aktivierung: `SCHEDULER_ENABLED=true`.
-   - Relevante Parameter: `SCHEDULER_POLL_INTERVAL_MS`, `SCHEDULER_PAGE_SIZE`, `SCHEDULER_MAX_PAGES_PER_CYCLE`, `SCHEDULER_DISPATCH_CONCURRENCY`, `SCHEDULER_BATCH_SIZE`, `SCHEDULER_LOG_BATCH_IDS`, `SCHEDULER_LOG_FAILED_ITEMS`.
-2. `internal/app/events/scheduler`
-   - Zweck: periodisches Clustering neuer Extraction-Ergebnisse.
-   - Intervall: `CLUSTER_SCHEDULE_INTERVAL_MINUTES`.
+1. Inbound Request läuft durch Middleware (`ForwardedHeaderMiddleware`, `RequestIDMiddleware`) und `otelhttp`-Instrumentation.
+2. Handler validieren Methode, Query-Parameter und JSON-Bodies strikt.
+3. Handler delegieren in App-Layer (kein DB-Zugriff im Handler).
+4. App-Layer nutzt Repository mit parameterisierten SQL-Statements.
+5. API liefert JSON-Antworten oder sichere Fehlerantworten.
 
-## Request-Flow
-
-1. HTTP-Request trifft auf Middleware:
-   - `otelhttp` erzeugt serverseitige Inbound-Spans mit route-basierten Namen (`METHOD + ServeMux-Pattern`).
-   - `ForwardedHeaderMiddleware` normalisiert Proxy-Metadaten.
-   - `RequestIDMiddleware` validiert/vergibt `X-Request-ID`.
-2. Handler validiert Methode, Query und Body strikt.
-3. Handler delegiert in App-Layer (kein DB-Zugriff im Handler).
-4. App-Layer nutzt Repository (parameterisierte SQL-Zugriffe via `database/sql`).
-5. Antwort wird als JSON oder definierter Fehlerstatus zurückgegeben.
-
-## Universe-Startup-Flow
-
-1. Beim Prozessstart lädt der Service genau einmal `GET {UNIVERSE_BASE_URL}/api/universe`.
-2. Die Universe-Antwort wird strikt validiert (inkl. required Feldern und Duplicate-Code-Prüfung).
-3. Validierte Universe-Daten werden in einen immutable Snapshot gemappt und thread-safe im Speicher gehalten.
-4. Bei Lade-, Decode- oder Validierungsfehlern bricht der Startup fail-fast ab.
-
-## Impact Domain Model
-
-Das Paket `internal/impact` definiert ein deterministisches, internes Domänenmodell für spätere Impact-Berechnung:
-
-- `SecurityProfile`: normalisiertes Security-Profil (u. a. Identität, GICS-Felder, Geo-/Country-Exposure, Event-Type-Sensitivity, Profile-Confidence).
-- `EventSecurityImpact`: ein einzelnes Event→Security-Impact-Ergebnis inkl. Richtung, Scores, Teil-Scores, Rule-Version und maschinenlesbaren Explanation-Codes.
-- `SecurityImpactSummary`: aggregierte Sicht pro Security über mehrere Events.
-
-Die Impact-Typen sind bewusst von Upstream-DTOs entkoppelt und enthalten keine Scoring-/Matching-Implementierung. Sie sind die stabile Grundlage für den späteren Rule-Engine-Schritt.
-
-## Impact Rules (V1)
-
-Das Paket `internal/impact/rules` enthält den zentralen, versionierten Regelstand für die spätere Impact-Engine:
-
-- deterministische In-Code-Regeln (kein externer Rule-Engine-Stack),
-- Versionierung über `RuleVersion` (`impact_rules_v1`),
-- stark typisierte Regelkonfiguration (`MatchingWeights`, `RecencyDecayConfig`, `ScoreConfig`, `SectorFallbackRule`, `DirectionRule`),
-- `DefaultRuleSet()` liefert ein vollständig initialisiertes V1-Regelset,
-- `Validate()` prüft Konsistenz und sichere Mindestanforderungen.
-
-Es gibt aktuell keine Runtime-Editierung und keinen Dateilader für Regeln; Erweiterungen erfolgen kontrolliert im Code.
-
-## HTTP API
+## API
 
 ### `GET /health`
 
-- Zweck: einfacher Liveness-Check.
-- Antwort: `200` mit Text-Body `ok`.
+- Liveness-Endpoint.
+- Antwort: `200` mit JSON `{ "status": "ok" }`.
 
 ### `GET /api/health`
 
-- Zweck: JSON-Healthcheck für API-Clients.
-- Antwort: `200` mit JSON-Objekt (u. a. Feld `status: "ok"`).
+- API-Healthcheck.
+- Antwort: `200` mit JSON `{ "status": "ok" }`.
 
 ### `GET /api/preprocess`
 
-- Zweck: deterministische Textvorverarbeitung eines Eingabetexts.
-- Query-Parameter:
-  - `text` (required)
-- Antwort: `200` mit JSON inkl. vorverarbeitetem Text.
-- Validierung: fehlender/ungültiger Input -> `400`.
+- Holt Upstream-Artikel und gibt pro Artikel den bereinigten Text zurück.
+- Antwort: `200` mit JSON `{"data": [...]}`.
+- Fehler:
+  - `405` bei falscher HTTP-Methode.
+  - `502` wenn Upstream-Artikel nicht geladen werden können.
 
 ### `POST /api/extract/run`
 
-- Zweck: Extraktion für genau einen Artikel starten/fortsetzen.
-- Request-Body (JSON):
+- Führt Extraction für genau eine `article_id` aus.
+- Request-Body:
   - `article_id` (required, `> 0`)
-- Antwort: `200` mit JSON-Status (`done|pending|...`) und ggf. Extraktionsresultat.
-- Validierung: ungültiger Body oder `article_id <= 0` -> `400`.
+- Antwort: `200` mit Status (`newly_extracted`, `already_done`, `already_pending`, `failed`) und optionalem Resultat.
+- Fehler:
+  - `400` bei ungültigem JSON oder ungültiger `article_id`.
+  - `404` wenn Artikel nicht gefunden.
+  - `502` bei Upstream-Fehler.
 
 ### `POST /api/extract/run-batch`
 
-- Zweck: Extraktion für mehrere Artikel in einem Request ausführen.
-- Request-Body (JSON):
-  - `article_ids` (required, nicht leer, alle `> 0`)
-  - `concurrency` (optional, positive Ganzzahl)
-- Antwort: `200` mit JSON-Übersicht pro Artikel (`items`, `succeeded`, `failed`, `total`).
-- Validierung: ungültiger Body/ungültige IDs -> `400`.
+- Führt Extraction für mehrere Artikel aus.
+- Request-Body:
+  - `article_ids` (required, nicht leer)
+  - `concurrency` (optional, `>= 0`)
+- Antwort: `200` mit `items`, `total`, `succeeded`, `failed`.
+- Fehler:
+  - `400` bei ungültigem JSON, leerer `article_ids` oder negativer `concurrency`.
+  - `502` bei Upstream-Fehler.
+  - `500` wenn Batch-Ausführung intern fehlschlägt.
 
 ### `GET /api/extract/result`
 
-- Zweck: persistiertes Extraktionsergebnis für eine Artikel-ID lesen.
+- Liest persistiertes Extraction-Ergebnis für `article_id`.
 - Query-Parameter:
   - `article_id` (required, positive Ganzzahl)
 - Antwort:
-  - `200` mit JSON inkl. `article_id`, `extraction_status`, Modell und extrahierten Feldern
-  - `404` wenn kein Ergebnis für die ID existiert
-- Validierung: fehlender/ungültiger `article_id` -> `400` (`invalid article_id`).
+  - `200` mit persistierten Feldern inkl. Extraction-Status.
+  - `404` falls kein Ergebnis existiert.
+- Fehler:
+  - `400` bei ungültiger `article_id`.
 
 ### `GET /api/events`
 
-- Zweck: aggregierte Events aus Persistenz abrufen.
+- Liefert aggregierte Events aus Persistenz.
 - Query-Parameter:
-  - `limit` (optional, positive Ganzzahl)
+  - `limit` (optional, Default `20`, `> 0`)
   - `since` (optional, RFC3339)
   - `until` (optional, RFC3339)
-- Antwort: `200` mit JSON-Liste aggregierter Events und effektiven Filtern.
-- Validierung: ungültige Query-Parameter -> `400`.
+- Antwort: `200` mit JSON inkl. `limit`, `since`, `until`, `events`.
+- Fehler:
+  - `400` bei ungültigen Query-Parametern.
+  - `500` bei internen Ladefehlern.
 
 ## Validierung & Fehlerverhalten
 
-- Ungültige Methoden -> `405`.
-- Ungültige Query-/Body-Werte -> `400`.
-- Nicht gefundene Ressource (z. B. Artikel-ID) -> `404`.
-- Upstream-Fehler -> `502`.
-- Nicht konfigurierte Abhängigkeiten -> `500` mit sicherer, generischer Fehlermeldung.
-- Interne Fehlerdetails werden nicht an Clients geleakt; Details nur in strukturierten Logs.
+- Strikte JSON-Validierung (`DisallowUnknownFields`, keine trailing tokens).
+- Alle externen Eingaben (Header, Query, Body, Upstream-Payloads) werden als untrusted behandelt und validiert.
+- Typische Fehlercodes:
+  - `400` invalid input
+  - `404` nicht gefunden
+  - `405` falsche Methode
+  - `500` interner Fehler
+  - `502` Upstream-Fehler
+- Interne Fehlerdetails werden nur in strukturierten Logs geschrieben, nicht an Clients geleakt.
 
 ## Konfiguration (ENV)
 
-### Pflichtvariablen
+### Pflichtvariablen (ohne Default)
 
-- `PORT`
 - `UPSTREAM_HOST`
 - `UPSTREAM_PORT`
 - `OPENAI_API_KEY`
 - `OPENAI_MODEL`
-- `UNIVERSE_BASE_URL`
-- `EXTRACT_DB_DSN`
-  - Unterstützte Formate (lib/pq-kompatibel):
-    - URL-Format, z. B. `postgres://user:pass@localhost:5432/appdb?sslmode=disable`
-    - Key/Value-Format, z. B. `host=localhost port=5432 user=user password=pass dbname=appdb sslmode=disable`
+- `EXTRACT_DB_DSN` (PostgreSQL DSN)
 
-### Optionale Variablen mit Defaults
+### Optionale Variablen mit Default
 
-- `OPENAI_BASE_URL` (Default: OpenAI SDK-Standard)
+- `PORT` (Default: `8080`)
+- `OPENAI_BASE_URL` (Default: OpenAI-Standard `https://api.openai.com/v1`)
 - `OPENAI_TIMEOUT_MS` (Default: `15000`)
-- `UNIVERSE_TIMEOUT_MS` (Default: `10000`)
 - `CLUSTER_SCHEDULE_INTERVAL_MINUTES` (Default: `5`)
 - `HTTP_SERVER_READ_HEADER_TIMEOUT` (Default: `5s`)
 - `HTTP_SERVER_READ_TIMEOUT` (Default: `15s`)
 - `HTTP_SERVER_WRITE_TIMEOUT` (Default: `15s`)
 - `HTTP_SERVER_IDLE_TIMEOUT` (Default: `60s`)
-- `IMPACT_MIN_SCORE` (Default: `10`)
-- `IMPACT_RECALC_SCHEDULE_INTERVAL_MINUTES` (Default: `30`, aktuell reserviert)
-
-#### Extraktions-Scheduler (`internal/app/scheduler`)
-
-Die Scheduler-Konfiguration wird über `internal/app/scheduler/config.go::ParseConfigFromEnv` geladen; bei ungültigen Werten bricht der Startup mit Fehler ab.
-
-- `SCHEDULER_ENABLED`
-  - Default: `false`
-  - Typ/Wertebereich: bool (`true|false`, akzeptiert Go-`strconv.ParseBool`-Formate)
-  - Wirkung: Aktiviert/deaktiviert den in-process Scheduler für automatisches Polling und Dispatching von Extraktionsläufen.
-- `SCHEDULER_POLL_INTERVAL_MS`
-  - Default: `30000` (30s)
-  - Typ/Wertebereich: Integer in Millisekunden, `> 0`
-  - Wirkung: Steuert das Polling-Intervall zwischen zwei Scheduler-Zyklen.
-- `SCHEDULER_PAGE_SIZE`
-  - Default: `50`
-  - Typ/Wertebereich: Integer, `> 0`
-  - Wirkung: Begrenzt, wie viele Kandidaten pro geladener Seite je Polling-Zyklus verarbeitet werden.
-- `SCHEDULER_MAX_PAGES_PER_CYCLE`
-  - Default: `10`
-  - Typ/Wertebereich: Integer, `> 0`
-  - Wirkung: Begrenzt die maximale Anzahl geladener Seiten pro Scheduler-Zyklus.
-- `SCHEDULER_DISPATCH_CONCURRENCY`
-  - Default: `2`
-  - Typ/Wertebereich: Integer, `> 0`
-  - Wirkung: Legt die parallele Verarbeitung beim Dispatch von Extraktionsjobs fest.
-- `SCHEDULER_BATCH_SIZE`
-  - Default: `20`
-  - Typ/Wertebereich: Integer, `> 0`
-  - Wirkung: Definiert die Größe einzelner Batch-Requests pro Dispatch.
-- `SCHEDULER_LOG_BATCH_IDS`
-  - Default: `false`
-  - Typ/Wertebereich: bool (`true|false`, akzeptiert Go-`strconv.ParseBool`-Formate)
-  - Wirkung: Aktiviert zusätzliche Logs mit Batch-IDs für bessere Nachvollziehbarkeit.
-- `SCHEDULER_LOG_FAILED_ITEMS`
-  - Default: `false`
-  - Typ/Wertebereich: bool (`true|false`, akzeptiert Go-`strconv.ParseBool`-Formate)
-  - Wirkung: Aktiviert zusätzliche Logs fehlgeschlagener Batch-Items.
-- `IMPACT_RECALC_SCHEDULE_INTERVAL_MINUTES`
-  - Default: `30`
-  - Typ/Wertebereich: Integer in Minuten, `> 0`
-  - Wirkung: Reservierte Kompatibilitätsvariable (derzeit kein aktiver Recalculator-Job).
-
-Ohne `SCHEDULER_ENABLED=true` findet keine automatische Extraktions-Polling/Batch-Verarbeitung statt; Extraktion erfolgt dann nur über API-Endpoints.
-`UNIVERSE_BASE_URL` und `UNIVERSE_TIMEOUT_MS` werden beim Startup für den einmaligen Universe-Load verwendet. Fehlende/ungültige Werte oder eine ungültige Universe-Antwort führen zum Startup-Abbruch.
-
-## Observability (OpenTelemetry)
-
-Der Service implementiert OpenTelemetry Tracing konkret wie folgt:
-
-- Startup initialisiert einen OTLP/HTTP Trace-Exporter und einen globalen `TracerProvider` mit Batch-Processor.
-- `service.name` wird als Resource-Attribut gesetzt.
-- Globaler Propagator ist `tracecontext + baggage`.
-- HTTP-Inbound wird über `otelhttp` instrumentiert (pro Request ein Server-Span mit route-basiertem Namen).
-- Zusätzliche Spans sind in den zentralen Use-Cases implementiert:
-  - Extraktion (`extraction.run`, `extraction.batch_run`)
-  - Event-/Impact-Queries
-  - Upstream-/Universe-Fetch
-  - zentrale Repository-Methoden (Extraction + Impact)
-- Fehler werden in Spans via `RecordError` und Error-Status markiert.
-- Beim Shutdown wird der TracerProvider mit Timeout beendet, damit Batch-Spans geflusht werden.
-
-Wichtige Umgebungsvariablen:
-
 - `OTEL_EXPORTER_OTLP_ENDPOINT` (Default: `http://localhost:4318`)
 - `OTEL_SERVICE_NAME` (Default: `ai-advisor-impact-service`)
 
-## Logging
+Scheduler (`internal/app/scheduler`):
 
-- Strukturierte JSON-Logs mit Feldern wie `ts`, `level`, `event`, `msg`, `request_id`, `component`.
-- Wenn Trace-Kontext vorhanden ist, enthalten Logs zusätzlich `trace_id` und `span_id`.
-- `stdout`: normale Logs.
-- `stderr`: Fehlerlogs.
-- Keine Secrets in Logs.
-- **Verpflichtender Error-Log-Contract** für alle `level=error` Einträge:
-  - `failure`: kurze, stabile Fehlerklassifikation (z. B. `events_query_failed`).
-  - `cause`: technische Fehlerursache (aus internem Fehlerobjekt).
-  - `sanitized_input`: sanitisiertes Input-Snapshot (nie Secrets, Tokens oder vollständige DSNs).
-  - `reaction`: Systemreaktion (z. B. `returned http 500`, `process exit with status 1`).
-- High-Impact-Pfade (HTTP-Handler, Startup/Shutdown, Upstream/Universe/Repository-Close-Fehler) schreiben diese Felder konsistent.
+- `SCHEDULER_ENABLED` (Default: `false`)
+- `SCHEDULER_POLL_INTERVAL_MS` (Default: `30000`)
+- `SCHEDULER_PAGE_SIZE` (Default: `50`)
+- `SCHEDULER_MAX_PAGES_PER_CYCLE` (Default: `10`)
+- `SCHEDULER_DISPATCH_CONCURRENCY` (Default: `2`)
+- `SCHEDULER_BATCH_SIZE` (Default: `20`)
+- `SCHEDULER_LOG_BATCH_IDS` (Default: `false`)
+- `SCHEDULER_LOG_FAILED_ITEMS` (Default: `false`)
+- `IMPACT_RECALC_SCHEDULE_INTERVAL_MINUTES` (Default: `30`, reservierte Kompatibilitätsvariable)
 
-## Entwicklung, Test, Run
+## Development / Test / Run
 
 ```bash
 go mod download
-go test ./...
-go test -tags=integration ./...
 go run ./...
+```
+
+Tests:
+
+```bash
+go test ./...
 ```
 
 ## Build
@@ -275,33 +179,19 @@ go build ./...
 
 ## CI
 
-Verwendeter Workflow:
-
-- `.github/workflows/ci.yml`
-
-Reihenfolge der CI-Schritte:
-
-1. Checkout
-2. Runtime Setup
-3. Dependencies installieren
-4. Format-Check
-5. Lint
-6. Statische Analyse
-7. Security-Scan
-8. Tests
-9. Build
+- Im aktuellen Repository-Stand ist kein ausführbarer CI-Workflow unter `.github/workflows/ci.yml` vorhanden.
+- Für lokale CI-Äquivalenz sollten mindestens folgende Checks laufen:
+  1. `go fmt` (diff-frei)
+  2. `go vet ./...`
+  3. `go test ./...`
+  4. `go build ./...`
+  5. `govulncheck ./...` (wenn Tooling installiert ist)
 
 ## Betriebshinweise / Limitationen
 
-- Service läuft hinter Reverse Proxy; TLS wird extern terminiert.
-- Forwarded Header werden normalisiert, aber Requestdaten bleiben untrusted und werden pro Endpoint validiert.
-- Startup ist Fail-Fast bei ungültiger Konfiguration.
-- Repository-Migrationen für Extraktion/Events laufen beim Startup.
-- Universe-Daten werden nur einmal beim Startup geladen und ausschließlich in-memory gehalten (kein Refresh, kein Scheduler, keine Persistenz, kein Reload-Endpunkt).
-### Scheduler-Betriebsmodi (main.go)
-
-- **Modus A: `SCHEDULER_ENABLED=false`**
-  - `internal/app/events/scheduler` läuft und clustert periodisch gemäß `CLUSTER_SCHEDULE_INTERVAL_MINUTES`.
-- **Modus B: `SCHEDULER_ENABLED=true`**
-  - `internal/app/events/scheduler` läuft weiterhin für Clustering gemäß `CLUSTER_SCHEDULE_INTERVAL_MINUTES`.
-  - `internal/app/scheduler` übernimmt zusätzliche automatische Extraktions-Polling/Batch-Läufe.
+- Betrieb hinter Reverse Proxy; TLS wird extern terminiert.
+- HTTP-Server setzt Read/Write/Idle-Timeouts aus ENV.
+- Startup ist fail-fast bei ungültiger Konfiguration oder nicht erreichbarer DB.
+- DB-Migrationen laufen beim Startup.
+- Event-Clustering-Scheduler läuft periodisch mit `CLUSTER_SCHEDULE_INTERVAL_MINUTES`.
+- Optionaler Extraction-Scheduler läuft nur mit `SCHEDULER_ENABLED=true`.
