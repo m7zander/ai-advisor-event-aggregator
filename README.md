@@ -179,13 +179,17 @@ go build ./...
 
 ## CI
 
-- Im aktuellen Repository-Stand ist kein ausführbarer CI-Workflow unter `.github/workflows/ci.yml` vorhanden.
-- Für lokale CI-Äquivalenz sollten mindestens folgende Checks laufen:
-  1. `go fmt` (diff-frei)
-  2. `go vet ./...`
-  3. `go test ./...`
-  4. `go build ./...`
-  5. `govulncheck ./...` (wenn Tooling installiert ist)
+- Der Workflow liegt unter `.github/workflows/ci.yml` und läuft bei `pull_request` (alle Branches) sowie bei `push` auf `main`.
+- Step-Reihenfolge im Workflow:
+  1. checkout
+  2. setup runtime
+  3. install dependencies
+  4. format check (`go fmt ./...` + `git diff --exit-code`)
+  5. lint (`go vet ./...`)
+  6. static analysis (`staticcheck` via `go run honnef.co/go/tools/cmd/staticcheck@latest ./...`)
+  7. security scan (`govulncheck`)
+  8. tests (`go test ./...`)
+  9. build (`go build ./...`)
 
 ## Betriebshinweise / Limitationen
 
