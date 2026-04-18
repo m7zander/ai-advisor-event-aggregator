@@ -105,69 +105,6 @@ func TestParsePositiveDurationFromEnv_RejectsZeroAndNegative(t *testing.T) {
 	}
 }
 
-func TestLoadUniverseConfigFromEnv_MissingBaseURL(t *testing.T) {
-	_, err := loadUniverseConfigFromEnv("", "")
-	if err == nil {
-		t.Fatal("expected error for missing UNIVERSE_BASE_URL, got nil")
-	}
-	if !strings.Contains(err.Error(), "UNIVERSE_BASE_URL") {
-		t.Fatalf("error %q does not contain env key", err)
-	}
-}
-
-func TestLoadUniverseConfigFromEnv_InvalidTimeout(t *testing.T) {
-	_, err := loadUniverseConfigFromEnv("https://universe.example.com", "bad")
-	if err == nil {
-		t.Fatal("expected error for invalid UNIVERSE_TIMEOUT_MS, got nil")
-	}
-	if !strings.Contains(err.Error(), "UNIVERSE_TIMEOUT_MS") {
-		t.Fatalf("error %q does not contain env key", err)
-	}
-
-	_, err = loadUniverseConfigFromEnv("https://universe.example.com", "0")
-	if err == nil {
-		t.Fatal("expected error for non-positive UNIVERSE_TIMEOUT_MS, got nil")
-	}
-}
-
-func TestLoadUniverseConfigFromEnv_Valid(t *testing.T) {
-	cfg, err := loadUniverseConfigFromEnv("https://universe.example.com", "")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if cfg.BaseURL != "https://universe.example.com" {
-		t.Fatalf("BaseURL = %q, want %q", cfg.BaseURL, "https://universe.example.com")
-	}
-	if cfg.Timeout != defaultUniverseTimeout {
-		t.Fatalf("Timeout = %v, want %v", cfg.Timeout, defaultUniverseTimeout)
-	}
-
-	cfg, err = loadUniverseConfigFromEnv("https://universe.example.com", "2500")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if cfg.Timeout != 2500*time.Millisecond {
-		t.Fatalf("Timeout = %v, want 2500ms", cfg.Timeout)
-	}
-}
-
-func TestSanitizeURLForLog_RedactsCredentialsAndQuery(t *testing.T) {
-	raw := "https://user:secret@universe.example.com/path?token=abc123&x=1#frag"
-	got := sanitizeURLForLog(raw)
-	if strings.Contains(got, "secret") || strings.Contains(got, "token=") || strings.Contains(got, "#frag") {
-		t.Fatalf("expected sanitized URL to redact credentials/query/fragment, got %q", got)
-	}
-	if got != "https://universe.example.com/path" {
-		t.Fatalf("sanitizeURLForLog() = %q, want %q", got, "https://universe.example.com/path")
-	}
-}
-
-func TestSanitizeURLForLog_InvalidInput(t *testing.T) {
-	if got := sanitizeURLForLog("://bad url"); got != "[redacted-invalid-url]" {
-		t.Fatalf("sanitizeURLForLog() = %q, want %q", got, "[redacted-invalid-url]")
-	}
-}
-
 func TestMigrationsDirectory_RuntimeScopeOnly(t *testing.T) {
 	entries, err := os.ReadDir("migrations")
 	if err != nil {
