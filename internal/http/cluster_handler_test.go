@@ -59,16 +59,13 @@ func TestListEvents_ValidRequest(t *testing.T) {
 		t.Fatalf("expected 200, got %d", rw.Code)
 	}
 	var resp struct {
-		Limit  int `json:"limit"`
-		Events []struct {
-			Event                 event.Event `json:"event"`
-			AffectedSecurityCount int         `json:"affected_security_count"`
-		} `json:"events"`
+		Limit  int           `json:"limit"`
+		Events []event.Event `json:"events"`
 	}
 	if err := json.NewDecoder(rw.Body).Decode(&resp); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if resp.Limit != 1 || len(resp.Events) != 1 || resp.Events[0].Event.ID != "e1" || len(resp.Events[0].Event.Industries) != 1 || resp.Events[0].Event.Industries[0] != "software" {
+	if resp.Limit != 1 || len(resp.Events) != 1 || resp.Events[0].ID != "e1" || len(resp.Events[0].Industries) != 1 || resp.Events[0].Industries[0] != "software" {
 		t.Fatalf("unexpected response body: %+v", resp)
 	}
 	if clusterSvc.lastSince == nil || clusterSvc.lastUntil == nil {
@@ -100,13 +97,9 @@ func TestListEvents_ResponseContainsIndustriesField(t *testing.T) {
 	if !ok || len(eventsValue) != 1 {
 		t.Fatalf("unexpected events payload: %#v", payload["events"])
 	}
-	firstItem, ok := eventsValue[0].(map[string]any)
+	eventPayload, ok := eventsValue[0].(map[string]any)
 	if !ok {
 		t.Fatalf("unexpected event payload type: %#v", eventsValue[0])
-	}
-	eventPayload, ok := firstItem["event"].(map[string]any)
-	if !ok {
-		t.Fatalf("expected nested event payload, got %#v", firstItem)
 	}
 	rawIndustries, ok := eventPayload["Industries"].([]any)
 	if !ok {

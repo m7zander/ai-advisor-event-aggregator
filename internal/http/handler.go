@@ -483,14 +483,7 @@ func (h *Handler) listEvents(w http.ResponseWriter, r *http.Request) {
 		logging.Field{Key: "limit", Value: limit},
 		logging.Field{Key: "returned", Value: len(events)},
 	)
-	eventsPayload := make([]map[string]any, 0, len(events))
-	for _, evt := range events {
-		eventsPayload = append(eventsPayload, map[string]any{
-			"event":                   evt,
-			"affected_security_count": 0,
-		})
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"limit": limit, "since": sincePtr, "until": untilPtr, "events": eventsPayload})
+	writeJSON(w, http.StatusOK, map[string]any{"limit": limit, "since": sincePtr, "until": untilPtr, "events": events})
 }
 
 // findArticleByID fetches upstream articles and returns one matching ID.

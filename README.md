@@ -107,9 +107,27 @@ Nicht im Scope:
   - `since` (optional, RFC3339)
   - `until` (optional, RFC3339)
 - Antwort: `200` mit JSON inkl. `limit`, `since`, `until`, `events`.
+  - `events` enthält direkt Event-Objekte (kein Wrapper-Objekt pro Eintrag).
+  - Beispiel:
+    ```json
+    {
+      "limit": 2,
+      "since": "2026-03-30T00:00:00Z",
+      "until": "2026-03-30T23:59:59Z",
+      "events": [
+        {
+          "ID": "evt-1",
+          "Industries": ["software"]
+        }
+      ]
+    }
+    ```
 - Fehler:
   - `400` bei ungültigen Query-Parametern.
   - `500` bei internen Ladefehlern.
+
+Kompatibilitätshinweis:
+- Das Legacy-Feld `affected_security_count` wird in `GET /api/events` nicht mehr ausgeliefert. API-Consumer müssen dieses Feld entfernen und stattdessen direkt die Event-Objekte unter `events` verarbeiten.
 
 ## Validierung & Fehlerverhalten
 
