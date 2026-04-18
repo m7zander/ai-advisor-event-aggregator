@@ -1,49 +1,48 @@
-<!-- This file documents migration ownership boundaries for the SQL files in this directory. -->
+<!-- This file documents canonical runtime schema ownership and archived SQL history. -->
 
 # Migration Ownership
 
-## Kanonisch aktive Tabellen (verbleibender Service)
+## Produktiver Startup-Migrationspfad (kanonischer Service-Scope)
 
-Für den verbleibenden Service sind ausschließlich folgende Tabellen kanonisch aktiv:
+Der produktive Startup-Migrationspfad läuft **ausschließlich** über Runtime-Migrationen im Code:
+
+- `internal/repository/extraction.Repository.Migrate`
+
+Dieser Pfad deckt nur den verbleibenden Service-Scope ab und erzeugt/verwaltet ausschließlich diese kanonisch aktiven Tabellen:
 
 - `impact_service_article_extractions`
 - `impact_service_aggregated_events`
 - `impact_service_clustering_state`
 
-Diese drei Tabellen werden **nur** über Runtime-Migrationen im Code gepflegt:
+Es gibt keinen zweiten produktiven SQL-Dateipfad unter `migrations/`, der beim App-Startup ausgeführt wird.
 
-- `internal/repository/extraction.Repository.Migrate`
+## Archivierte Legacy-SQL-Dateien (nicht runtime-relevant)
 
-## Legacy-Artefakte (nicht mehr durch Runtime-Code verwendet)
+Alle historischen SQL-Dateien wurden nach `migrations/legacy_archive/` verschoben und sind nur noch Dokumentations-/Audit-Historie:
 
-Die folgenden Impact-Tabellen sind Legacy-Artefakte und werden nicht mehr vom Runtime-Code gelesen oder geschrieben:
+- `legacy_archive/000001_create_article_extractions.sql`
+- `legacy_archive/000002_drop_extracted_duplicate_candidate.sql`
+- `legacy_archive/000003_create_aggregated_events.sql`
+- `legacy_archive/000004_add_extracted_industries.sql`
+- `legacy_archive/000005_add_aggregated_event_industries.sql`
+- `legacy_archive/000006_create_event_security_impacts.sql`
+- `legacy_archive/000007_drop_event_security_impacts.sql`
+- `legacy_archive/000008_rename_legacy_tables_with_service_prefix.sql`
+- `legacy_archive/000009_decommission_legacy_impact_tables.sql`
 
-- `impact_service_event_security_impacts`
-- `event_security_impacts` (historischer, nicht-präfixierter Tabellenname)
+Diese Dateien sind **nicht** Teil des produktiven Runtime-Migrationsmechanismus.
 
-Betroffene historische SQL-Dateien im Verzeichnis:
+## Rollout-Hinweise für bestehende Alt-DBs
 
-- `000006_create_event_security_impacts.sql`
-- `000007_drop_event_security_impacts.sql`
-- `000008_rename_legacy_tables_with_service_prefix.sql`
+Für Alt-DBs gelten folgende klare Rollout-Regeln:
 
-Diese Dateien bleiben als Historie erhalten, sind aber **nicht** der kanonische Runtime-Migrationspfad des verbleibenden Services.
+1. Runtime deployen, damit `Repository.Migrate` die kanonischen Service-Tabellen (`impact_service_*`) sicherstellt.
+2. Verifizieren, dass keine produktiven Reads/Writes mehr gegen Legacy-Impact-Tabellen laufen (insbesondere `event_security_impacts` bzw. `impact_service_event_security_impacts`).
+3. Falls Legacy-Impact-Tabellen physisch entfernt werden sollen, `legacy_archive/000009_decommission_legacy_impact_tables.sql` als **separaten, geplanten Decommission-Schritt** ausführen (nicht als Teil des App-Startups).
+4. Vor Drops Snapshot/Backup sicherstellen; ein Code-Rollback allein stellt gedroppte Tabellen nicht wieder her.
 
 ## Policy: keine doppelte Ownership
 
-Für die kanonisch aktiven Tabellen keine DDL doppelt führen:
+Schemaänderungen an den kanonisch aktiven Tabellen dürfen nur über **einen** Pfad eingeführt werden: Runtime-Migrationen im Code.
 
-1. Runtime-Migrationen im Code (`Repository.Migrate`), und
-2. externe SQL-Dateien in `migrations/`.
-
-Schemaänderungen an den verbleibenden Tabellen dürfen nur über **einen** Pfad eingeführt werden, um doppelte `ALTER TABLE`/`ADD COLUMN`-Ausführung bei Deployments zu vermeiden.
-
-## Decommission für produktive Drops
-
-Wenn produktive Drops der Legacy-Impact-Tabellen erforderlich sind, darf das nur über eine **separate Decommission-Migration** erfolgen.
-
-Diese liegt in:
-
-- `000009_decommission_legacy_impact_tables.sql`
-
-Dort sind Rollout-Reihenfolge und Backout-Hinweise dokumentiert; Drops werden explizit und getrennt von bestehenden Runtime-Migrationspfaden durchgeführt.
+Damit werden doppelte DDL-Ausführungen und inkonsistente Deployments vermieden.
