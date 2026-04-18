@@ -2,31 +2,48 @@
 
 # Migration Ownership
 
-## Railway production path
+## Kanonisch aktive Tabellen (verbleibender Service)
 
-In Railway, extraction/event schema migration is executed by the application at startup:
+Für den verbleibenden Service sind ausschließlich folgende Tabellen kanonisch aktiv:
 
-- `internal/repository/extraction.Repository.Migrate` owns:
-  - `impact_service_article_extractions`
-  - `impact_service_aggregated_events`
-  - `impact_service_clustering_state`
+- `impact_service_article_extractions`
+- `impact_service_aggregated_events`
+- `impact_service_clustering_state`
 
-## SQL files overlap audit
+Diese drei Tabellen werden **nur** über Runtime-Migrationen im Code gepflegt:
 
-- `000001` to `000005` historically covered extraction/event schema evolution.
-- Those files intentionally contain ownership/no-op notes where applicable so extraction/event columns are not added through a second migration path.
+- `internal/repository/extraction.Repository.Migrate`
 
-Feature SQL files (`000006` to `000008`) were removed from this repository after decommissioning in application code.
+## Legacy-Artefakte (nicht mehr durch Runtime-Code verwendet)
 
-## Policy
+Die folgenden Impact-Tabellen sind Legacy-Artefakte und werden nicht mehr vom Runtime-Code gelesen oder geschrieben:
 
-For `impact_service_article_extractions` and `impact_service_aggregated_events`, do not introduce the same schema change in both:
+- `impact_service_event_security_impacts`
+- `event_security_impacts` (historischer, nicht-präfixierter Tabellenname)
 
-1. runtime migration (`Repository.Migrate`), and
-2. external SQL files in this directory.
+Betroffene historische SQL-Dateien im Verzeichnis:
 
-Use exactly one ownership path for a schema change to avoid duplicate `ADD COLUMN`/DDL execution during deployments.
+- `000006_create_event_security_impacts.sql`
+- `000007_drop_event_security_impacts.sql`
+- `000008_rename_legacy_tables_with_service_prefix.sql`
 
-## Decommission note for existing production objects
+Diese Dateien bleiben als Historie erhalten, sind aber **nicht** der kanonische Runtime-Migrationspfad des verbleibenden Services.
 
-If existing production DB objects from the removed feature must be actively dropped, handle that via a **separate, explicit decommission migration ticket** that plans `DROP TABLE` ordering and rollout impact control.
+## Policy: keine doppelte Ownership
+
+Für die kanonisch aktiven Tabellen keine DDL doppelt führen:
+
+1. Runtime-Migrationen im Code (`Repository.Migrate`), und
+2. externe SQL-Dateien in `migrations/`.
+
+Schemaänderungen an den verbleibenden Tabellen dürfen nur über **einen** Pfad eingeführt werden, um doppelte `ALTER TABLE`/`ADD COLUMN`-Ausführung bei Deployments zu vermeiden.
+
+## Decommission für produktive Drops
+
+Wenn produktive Drops der Legacy-Impact-Tabellen erforderlich sind, darf das nur über eine **separate Decommission-Migration** erfolgen.
+
+Diese liegt in:
+
+- `000009_decommission_legacy_impact_tables.sql`
+
+Dort sind Rollout-Reihenfolge und Backout-Hinweise dokumentiert; Drops werden explizit und getrennt von bestehenden Runtime-Migrationspfaden durchgeführt.

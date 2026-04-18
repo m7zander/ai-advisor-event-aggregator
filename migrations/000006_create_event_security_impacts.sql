@@ -1,3 +1,4 @@
+-- Legacy artifact notice: this historical migration created an impact table that is no longer used by runtime code.
 BEGIN;
 
 CREATE TABLE IF NOT EXISTS impact_service_event_security_impacts (

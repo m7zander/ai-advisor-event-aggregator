@@ -1,3 +1,4 @@
+-- Legacy artifact notice: this historical migration targets only the old non-prefixed impact table name.
 BEGIN;
 
 -- Safety: this decommission migration only targets the legacy pre-prefix table name.

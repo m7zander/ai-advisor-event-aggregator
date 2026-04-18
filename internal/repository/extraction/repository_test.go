@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -110,6 +111,22 @@ func TestRepository_Migrate_Idempotent(t *testing.T) {
 	}
 	if err := repo.Migrate(context.Background()); err != nil {
 		t.Fatalf("second migrate: %v", err)
+	}
+}
+
+
+// TestRepository_Migrate_RuntimeSchemaDoesNotReferenceLegacyImpactTables verifies runtime migration DDL excludes decommissioned impact tables.
+// It inspects in-process migration SQL constants and fails when legacy impact-table names are present.
+func TestRepository_Migrate_RuntimeSchemaDoesNotReferenceLegacyImpactTables(t *testing.T) {
+	legacyTokens := []string{"event_security_impacts", "impact_service_event_security_impacts"}
+	migrationSQL := []string{extractionLegacyRenameSQL, extractionSchemaSetup}
+
+	for _, sqlText := range migrationSQL {
+		for _, token := range legacyTokens {
+			if strings.Contains(sqlText, token) {
+				t.Fatalf("runtime migration SQL must not reference legacy impact tables: found %q", token)
+			}
+		}
 	}
 }
 
