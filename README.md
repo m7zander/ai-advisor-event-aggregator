@@ -175,10 +175,6 @@ Scheduler (`internal/app/scheduler`):
 - `SCHEDULER_LOG_BATCH_IDS` (Default: `false`)
 - `SCHEDULER_LOG_FAILED_ITEMS` (Default: `false`)
 
-No-Op-Kompatibilitätsvariable (wird explizit gelesen, validiert und geloggt, beeinflusst aber kein Runtime-Verhalten):
-
-- `IMPACT_RECALC_SCHEDULE_INTERVAL_MINUTES` (Default: `30`, keine funktionale Wirkung)
-
 ## Development / Test / Run
 
 ```bash

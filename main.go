@@ -73,7 +73,6 @@ func main() {
 	openAITimeoutMSRaw := os.Getenv("OPENAI_TIMEOUT_MS")
 	dbDSN := os.Getenv("DATABASE_URL")
 	clusterScheduleMinutesRaw := os.Getenv("CLUSTER_SCHEDULE_INTERVAL_MINUTES")
-	impactRecalcScheduleMinutesRaw := os.Getenv("IMPACT_RECALC_SCHEDULE_INTERVAL_MINUTES")
 	otelEndpoint := strings.TrimSpace(os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"))
 	otelServiceName := strings.TrimSpace(os.Getenv("OTEL_SERVICE_NAME"))
 
@@ -146,19 +145,6 @@ func main() {
 		}
 		clusterScheduleMinutes = parsed
 	}
-	impactRecalcScheduleMinutes := 30
-	if impactRecalcScheduleMinutesRaw != "" {
-		parsed, parseErr := strconv.Atoi(impactRecalcScheduleMinutesRaw)
-		if parseErr != nil || parsed <= 0 {
-			fatalf(logger, "IMPACT_RECALC_SCHEDULE_INTERVAL_MINUTES must be a valid positive integer, got %q", impactRecalcScheduleMinutesRaw)
-		}
-		impactRecalcScheduleMinutes = parsed
-	}
-	logger.Info(rootCtx, "app.config.compat_noop_variable_loaded", "main", "compatibility environment variable IMPACT_RECALC_SCHEDULE_INTERVAL_MINUTES was loaded but is currently ignored",
-		logging.Field{Key: "env_var", Value: "IMPACT_RECALC_SCHEDULE_INTERVAL_MINUTES"},
-		logging.Field{Key: "configured_interval_minutes", Value: impactRecalcScheduleMinutes},
-		logging.Field{Key: "effect", Value: "no_runtime_effect"},
-	)
 
 	db, err := sql.Open("postgres", dbDSN)
 	if err != nil {
