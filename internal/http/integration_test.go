@@ -166,13 +166,10 @@ func TestEventsEndpointIntegration_IncludesIndustries(t *testing.T) {
 	}
 
 	var payload struct {
-		Limit  int        `json:"limit"`
-		Since  *time.Time `json:"since"`
-		Until  *time.Time `json:"until"`
-		Events []struct {
-			Event                 event.Event `json:"event"`
-			AffectedSecurityCount int         `json:"affected_security_count"`
-		} `json:"events"`
+		Limit  int           `json:"limit"`
+		Since  *time.Time    `json:"since"`
+		Until  *time.Time    `json:"until"`
+		Events []event.Event `json:"events"`
 	}
 	if err := json.NewDecoder(res.Body).Decode(&payload); err != nil {
 		t.Fatalf("decode events response: %v", err)
@@ -186,16 +183,13 @@ func TestEventsEndpointIntegration_IncludesIndustries(t *testing.T) {
 	if len(payload.Events) != 2 {
 		t.Fatalf("expected 2 events, got %d", len(payload.Events))
 	}
-	if payload.Events[0].Event.ID != "evt-1" || len(payload.Events[0].Event.Industries) != 0 {
+	if payload.Events[0].ID != "evt-1" || len(payload.Events[0].Industries) != 0 {
 		t.Fatalf("expected first event with empty industries, got %+v", payload.Events[0])
 	}
-	if payload.Events[1].Event.ID != "evt-2" {
+	if payload.Events[1].ID != "evt-2" {
 		t.Fatalf("unexpected second event: %+v", payload.Events[1])
 	}
-	if len(payload.Events[1].Event.Industries) != 4 {
-		t.Fatalf("expected industries with original duplicates/casing preserved by transport, got %+v", payload.Events[1].Event.Industries)
-	}
-	if payload.Events[0].AffectedSecurityCount != 0 || payload.Events[1].AffectedSecurityCount != 0 {
-		t.Fatalf("expected zero affected_security_count without impact service attachment, got %+v", payload.Events)
+	if len(payload.Events[1].Industries) != 4 {
+		t.Fatalf("expected industries with original duplicates/casing preserved by transport, got %+v", payload.Events[1].Industries)
 	}
 }
