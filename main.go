@@ -16,14 +16,9 @@ import (
 
 	appevents "ai-advisor-impact-service/internal/app/events"
 	appextraction "ai-advisor-impact-service/internal/app/extraction"
-	appimpact "ai-advisor-impact-service/internal/app/impact"
 	appscheduler "ai-advisor-impact-service/internal/app/scheduler"
 	httpapi "ai-advisor-impact-service/internal/http"
-	impactrules "ai-advisor-impact-service/internal/impact/rules"
 	"ai-advisor-impact-service/internal/logging"
-	impactrepo "ai-advisor-impact-service/internal/repository/impact"
-	"ai-advisor-impact-service/internal/universe"
-	universestore "ai-advisor-impact-service/internal/universe/store"
 	"ai-advisor-impact-service/internal/upstream"
 
 	repopkg "ai-advisor-impact-service/internal/repository/extraction"
@@ -42,7 +37,6 @@ const (
 	defaultHTTPReadTimeout       = 15 * time.Second
 	defaultHTTPWriteTimeout      = 15 * time.Second
 	defaultHTTPIdleTimeout       = 60 * time.Second
-	defaultUniverseTimeout       = 10 * time.Second
 )
 
 type httpServerTimeoutConfig struct {
@@ -50,11 +44,6 @@ type httpServerTimeoutConfig struct {
 	ReadTimeout       time.Duration
 	WriteTimeout      time.Duration
 	IdleTimeout       time.Duration
-}
-
-type universeConfig struct {
-	BaseURL string
-	Timeout time.Duration
 }
 
 // main reads environment configuration, wires application dependencies, and runs the HTTP server.
@@ -81,9 +70,6 @@ func main() {
 	openAIModel := os.Getenv("OPENAI_MODEL")
 	openAIBaseURL := os.Getenv("OPENAI_BASE_URL")
 	openAITimeoutMSRaw := os.Getenv("OPENAI_TIMEOUT_MS")
-	universeBaseURL := os.Getenv("UNIVERSE_BASE_URL")
-	universeTimeoutMSRaw := os.Getenv("UNIVERSE_TIMEOUT_MS")
-	impactMinScoreRaw := os.Getenv("IMPACT_MIN_SCORE")
 	dbDSN := os.Getenv("EXTRACT_DB_DSN")
 	clusterScheduleMinutesRaw := os.Getenv("CLUSTER_SCHEDULE_INTERVAL_MINUTES")
 	otelEndpoint := strings.TrimSpace(os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"))
@@ -110,10 +96,6 @@ func main() {
 	}
 	if otelServiceName == "" {
 		otelServiceName = "ai-advisor-impact-service"
-	}
-	universeCfg, err := loadUniverseConfigFromEnv(universeBaseURL, universeTimeoutMSRaw)
-	if err != nil {
-		fatalf(logger, "invalid universe config: %v", err)
 	}
 	if dbDSN == "" {
 		fatalf(logger, "EXTRACT_DB_DSN is required")
@@ -162,15 +144,6 @@ func main() {
 		}
 		clusterScheduleMinutes = parsed
 	}
-	impactMinScore := 10.0
-	if strings.TrimSpace(impactMinScoreRaw) != "" {
-		parsed, parseErr := strconv.ParseFloat(strings.TrimSpace(impactMinScoreRaw), 64)
-		if parseErr != nil || parsed < 0 || parsed > 100 {
-			fatalf(logger, "IMPACT_MIN_SCORE must be a number in range 0..100, got %q", impactMinScoreRaw)
-		}
-		impactMinScore = parsed
-	}
-
 	db, err := sql.Open("postgres", dbDSN)
 	if err != nil {
 		fatalf(logger, "failed to open extraction DB: %v", err)
@@ -197,14 +170,6 @@ func main() {
 	if err := repo.Migrate(context.Background()); err != nil {
 		fatalf(logger, "failed to run extraction migrations: %v", err)
 	}
-	impactRepo, err := impactrepo.NewRepository(db)
-	if err != nil {
-		fatalf(logger, "failed to create impact repository: %v", err)
-	}
-	if err := impactRepo.Migrate(context.Background()); err != nil {
-		fatalf(logger, "failed to run impact migrations: %v", err)
-	}
-
 	extractor, err := appextraction.NewLLMExtractor(appextraction.LLMConfig{
 		APIKey:  openAIAPIKey,
 		Model:   openAIModel,
@@ -218,53 +183,14 @@ func main() {
 	if err != nil {
 		fatalf(logger, "failed to build clustering service: %v", err)
 	}
-	universeClient, err := universe.NewClient(universeCfg.BaseURL, universeCfg.Timeout)
-	if err != nil {
-		fatalf(logger, "failed to build universe client: %v", err)
-	}
-	universeStore, err := universestore.NewStore(universeClient, logger, universestore.Config{})
-	if err != nil {
-		fatalf(logger, "failed to initialize universe store: %v", err)
-	}
-	logger.Info(rootCtx, "app.universe.store_ready", "main", "universe store initialized",
-		logging.Field{Key: "count", Value: universeStore.Count()},
-		logging.Field{Key: "loaded_at", Value: universeStore.LoadedAt().Format(time.RFC3339Nano)},
-	)
-	ruleSet := impactrules.DefaultRuleSet()
-	impactService, err := appimpact.NewService(clusterService, universeStore, impactRepo, logger, appimpact.Config{
-		EventsLimit: 1000,
-		MinScore:    impactMinScore,
-		RuleSet:     ruleSet,
-	})
-	if err != nil {
-		fatalf(logger, "failed to create impact service: %v", err)
-	}
-	impactQueryService, err := appimpact.NewQueryService(clusterService, impactRepo, universeStore)
-	if err != nil {
-		fatalf(logger, "failed to create impact query service: %v", err)
-	}
-	if recalcErr := impactService.RecalculateImpacts(rootCtx); recalcErr != nil {
-		logger.ErrorWithContract(rootCtx, "app.impact.initial_recalc_failed", "main", "initial impact recalculation failed", recalcErr, logging.ErrorContract{
-			Failure:        "initial_impact_recalc_failed",
-			Cause:          recalcErr.Error(),
-			SanitizedInput: "{}",
-			Reaction:       "serving with last persisted impact state",
-		})
-	} else {
-		logger.Info(rootCtx, "app.impact.initial_recalc_completed", "main", "initial impact recalculation completed")
-	}
 
 	mux := http.NewServeMux()
 	client := upstream.NewClient(host, upstreamPort)
 	h := httpapi.NewHandlerWithExtractionAndClustering(client, extractor, repo, openAIModel, clusterService)
-	h.AttachImpactService(impactQueryService)
 	h.Register(mux)
 	eventScheduler := appevents.NewScheduler(clusterService, logger, time.Duration(clusterScheduleMinutes)*time.Minute)
 	if eventScheduler == nil {
 		fatalf(logger, "failed to build event scheduler")
-	}
-	if !schedulerCfg.Enabled {
-		eventScheduler.SetImpactRecalculator(impactService)
 	}
 	go eventScheduler.Run(rootCtx)
 	logger.Info(rootCtx, "app.event_scheduler.enabled", "main", "event scheduler enabled", logging.Field{Key: "interval_minutes", Value: clusterScheduleMinutes})
@@ -279,7 +205,6 @@ func main() {
 		if err != nil {
 			fatalf(logger, "failed to build scheduler: %v", err)
 		}
-		scheduler.SetImpactRecalculator(impactService)
 		go func() {
 			if runErr := scheduler.Run(rootCtx); runErr != nil {
 				logger.ErrorWithContract(rootCtx, "app.scheduler.stopped_error", "main", "scheduler stopped with error", runErr, logging.ErrorContract{
@@ -330,10 +255,6 @@ func main() {
 		logging.Field{Key: "read_timeout", Value: serverTimeouts.ReadTimeout.String()},
 		logging.Field{Key: "write_timeout", Value: serverTimeouts.WriteTimeout.String()},
 		logging.Field{Key: "idle_timeout", Value: serverTimeouts.IdleTimeout.String()},
-	)
-	logger.Info(rootCtx, "app.universe.startup_load_configured", "main", "universe startup load configured",
-		logging.Field{Key: "base_url", Value: sanitizeURLForLog(universeCfg.BaseURL)},
-		logging.Field{Key: "timeout", Value: universeCfg.Timeout.String()},
 	)
 	logger.Info(rootCtx, "app.server.listening", "main", "listening", logging.Field{Key: "addr", Value: addr})
 	go func() {
@@ -473,21 +394,6 @@ func splitPostgresKVDSN(dsn string) ([]string, error) {
 	return parts, nil
 }
 
-func sanitizeURLForLog(rawURL string) string {
-	trimmed := strings.TrimSpace(rawURL)
-	if trimmed == "" {
-		return ""
-	}
-	parsed, err := url.Parse(trimmed)
-	if err != nil {
-		return "[redacted-invalid-url]"
-	}
-	parsed.User = nil
-	parsed.RawQuery = ""
-	parsed.Fragment = ""
-	return parsed.String()
-}
-
 func loadHTTPServerTimeoutConfigFromEnv() (httpServerTimeoutConfig, error) {
 	readHeaderTimeout, err := parsePositiveDurationFromEnv("HTTP_SERVER_READ_HEADER_TIMEOUT", defaultHTTPReadHeaderTimeout)
 	if err != nil {
@@ -524,33 +430,6 @@ func parsePositiveDurationFromEnv(key string, defaultValue time.Duration) (time.
 	}
 	if parsed <= 0 {
 		return 0, fmt.Errorf("%s must be greater than zero, got %q", key, raw)
-	}
-	return parsed, nil
-}
-
-func loadUniverseConfigFromEnv(baseURLRaw, timeoutMSRaw string) (universeConfig, error) {
-	baseURL := strings.TrimSpace(baseURLRaw)
-	if baseURL == "" {
-		return universeConfig{}, fmt.Errorf("UNIVERSE_BASE_URL is required")
-	}
-	timeoutMS, err := parsePositiveIntFromEnv("UNIVERSE_TIMEOUT_MS", timeoutMSRaw, int(defaultUniverseTimeout.Milliseconds()))
-	if err != nil {
-		return universeConfig{}, err
-	}
-	return universeConfig{
-		BaseURL: baseURL,
-		Timeout: time.Duration(timeoutMS) * time.Millisecond,
-	}, nil
-}
-
-func parsePositiveIntFromEnv(key, raw string, defaultValue int) (int, error) {
-	value := strings.TrimSpace(raw)
-	if value == "" {
-		return defaultValue, nil
-	}
-	parsed, err := strconv.Atoi(value)
-	if err != nil || parsed <= 0 {
-		return 0, fmt.Errorf("%s must be a valid positive integer, got %q", key, raw)
 	}
 	return parsed, nil
 }
