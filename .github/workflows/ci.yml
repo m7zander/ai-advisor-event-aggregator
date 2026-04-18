@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+
+      - name: setup runtime
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: install dependencies
+        run: go mod download
+
+      - name: format check
+        run: |
+          go fmt ./...
+          git diff --exit-code
+
+      - name: lint
+        run: go vet ./...
+
+      - name: static analysis
+        run: go test ./... -run TestDoesNotExist
+
+      - name: security scan
+        run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+
+      - name: tests
+        run: go test ./...
+
+      - name: build
+        run: go build ./...
