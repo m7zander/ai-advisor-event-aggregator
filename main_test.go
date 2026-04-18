@@ -1,6 +1,8 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -163,5 +165,42 @@ func TestSanitizeURLForLog_RedactsCredentialsAndQuery(t *testing.T) {
 func TestSanitizeURLForLog_InvalidInput(t *testing.T) {
 	if got := sanitizeURLForLog("://bad url"); got != "[redacted-invalid-url]" {
 		t.Fatalf("sanitizeURLForLog() = %q, want %q", got, "[redacted-invalid-url]")
+	}
+}
+
+func TestMigrationsDirectory_RuntimeScopeOnly(t *testing.T) {
+	entries, err := os.ReadDir("migrations")
+	if err != nil {
+		t.Fatalf("read migrations directory: %v", err)
+	}
+
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		if filepath.Ext(entry.Name()) == ".sql" {
+			t.Fatalf("runtime migrations directory must not contain root SQL files, found %q", entry.Name())
+		}
+	}
+}
+
+func TestMigrationsLegacyArchive_ContainsHistoricalSQL(t *testing.T) {
+	entries, err := os.ReadDir(filepath.Join("migrations", "legacy_archive"))
+	if err != nil {
+		t.Fatalf("read legacy archive directory: %v", err)
+	}
+
+	sqlCount := 0
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		if filepath.Ext(entry.Name()) == ".sql" {
+			sqlCount++
+		}
+	}
+
+	if sqlCount == 0 {
+		t.Fatal("expected at least one archived legacy SQL migration file")
 	}
 }

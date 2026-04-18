@@ -8,6 +8,8 @@ Der produktive Startup-Migrationspfad läuft **ausschließlich** über Runtime-M
 
 - `internal/repository/extraction.Repository.Migrate`
 
+Die Anwendung lädt beim Startup **keine SQL-Dateien aus `migrations/`**. Der Runtime-Mechanismus besteht ausschließlich aus den in `Repository.Migrate` hinterlegten DDL-Statements.
+
 Dieser Pfad deckt nur den verbleibenden Service-Scope ab und erzeugt/verwaltet ausschließlich diese kanonisch aktiven Tabellen:
 
 - `impact_service_article_extractions`
@@ -37,9 +39,10 @@ Diese Dateien sind **nicht** Teil des produktiven Runtime-Migrationsmechanismus.
 Für Alt-DBs gelten folgende klare Rollout-Regeln:
 
 1. Runtime deployen, damit `Repository.Migrate` die kanonischen Service-Tabellen (`impact_service_*`) sicherstellt.
-2. Verifizieren, dass keine produktiven Reads/Writes mehr gegen Legacy-Impact-Tabellen laufen (insbesondere `event_security_impacts` bzw. `impact_service_event_security_impacts`).
-3. Falls Legacy-Impact-Tabellen physisch entfernt werden sollen, `legacy_archive/000009_decommission_legacy_impact_tables.sql` als **separaten, geplanten Decommission-Schritt** ausführen (nicht als Teil des App-Startups).
-4. Vor Drops Snapshot/Backup sicherstellen; ein Code-Rollback allein stellt gedroppte Tabellen nicht wieder her.
+2. Verifizieren, dass produktive Reads/Writes nur noch auf kanonischen Tabellen laufen und keine Legacy-Impact-Tabellen mehr verwenden (insbesondere `event_security_impacts` bzw. `impact_service_event_security_impacts`).
+3. Optionalen Decommission getrennt planen: `legacy_archive/000009_decommission_legacy_impact_tables.sql` **nicht** im Startup ausführen, sondern als separaten, expliziten Ops-Schritt.
+4. Vor jedem physischen Drop Snapshot/Backup erstellen; ein Code-Rollback allein stellt gedroppte Tabellen nicht wieder her.
+5. Für bereits bereinigte DBs ist kein zusätzlicher SQL-Runtime-Schritt nötig, da die Anwendung ausschließlich den Code-Migrationspfad nutzt.
 
 ## Policy: keine doppelte Ownership
 
