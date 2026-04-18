@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"ai-advisor-impact-service/internal/event"
-	"ai-advisor-impact-service/internal/logging"
+	"ai-advisor-event-aggregator/internal/event"
+	"ai-advisor-event-aggregator/internal/logging"
 )
 
 // fakeClusterService returns deterministic event list outputs for handler tests.

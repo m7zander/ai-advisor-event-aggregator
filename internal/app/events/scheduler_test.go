@@ -8,10 +8,10 @@ import (
 	"testing"
 	"time"
 
-	"ai-advisor-impact-service/internal/event"
-	"ai-advisor-impact-service/internal/extract"
-	"ai-advisor-impact-service/internal/logging"
-	repopkg "ai-advisor-impact-service/internal/repository/extraction"
+	"ai-advisor-event-aggregator/internal/event"
+	"ai-advisor-event-aggregator/internal/extract"
+	"ai-advisor-event-aggregator/internal/logging"
+	repopkg "ai-advisor-event-aggregator/internal/repository/extraction"
 )
 
 // TestScheduler_RunOnceUpdatesCursorAndLogs verifies periodic scheduler runs clustering and stores the cursor.

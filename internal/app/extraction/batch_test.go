@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"ai-advisor-impact-service/internal/extract"
+	"ai-advisor-event-aggregator/internal/extract"
 )
 
 // batchFakeExtractor is a controllable Extractor test double for batch tests.

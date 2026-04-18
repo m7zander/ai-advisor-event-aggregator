@@ -144,7 +144,7 @@ Nicht im Scope:
 - `HTTP_SERVER_WRITE_TIMEOUT` (Default: `15s`)
 - `HTTP_SERVER_IDLE_TIMEOUT` (Default: `60s`)
 - `OTEL_EXPORTER_OTLP_ENDPOINT` (Default: `http://localhost:4318`)
-- `OTEL_SERVICE_NAME` (Default: `ai-advisor-impact-service`)
+- `OTEL_SERVICE_NAME` (Default: `ai-advisor-event-aggregator`)
 
 Scheduler (`internal/app/scheduler`):
 

@@ -9,9 +9,9 @@ import (
 	"strings"
 	"time"
 
-	appextraction "ai-advisor-impact-service/internal/app/extraction"
-	"ai-advisor-impact-service/internal/logging"
-	"ai-advisor-impact-service/internal/model"
+	appextraction "ai-advisor-event-aggregator/internal/app/extraction"
+	"ai-advisor-event-aggregator/internal/logging"
+	"ai-advisor-event-aggregator/internal/model"
 )
 
 var timeNewTicker = time.NewTicker

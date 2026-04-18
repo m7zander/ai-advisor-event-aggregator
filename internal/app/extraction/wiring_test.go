@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"ai-advisor-impact-service/internal/extract"
-	"ai-advisor-impact-service/internal/model"
+	"ai-advisor-event-aggregator/internal/extract"
+	"ai-advisor-event-aggregator/internal/model"
 )
 
 // TestNewLLMExtractor_Success verifies valid config builds an Extractor-compatible LLM client.

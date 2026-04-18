@@ -8,9 +8,9 @@ import (
 	"strings"
 	"time"
 
-	"ai-advisor-impact-service/internal/extract"
-	"ai-advisor-impact-service/internal/observability"
-	"ai-advisor-impact-service/internal/preprocess"
+	"ai-advisor-event-aggregator/internal/extract"
+	"ai-advisor-event-aggregator/internal/observability"
+	"ai-advisor-event-aggregator/internal/preprocess"
 )
 
 // Extractor defines the narrow dependency required by the extraction orchestration.

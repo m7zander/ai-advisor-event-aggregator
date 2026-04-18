@@ -9,26 +9,26 @@ import (
 )
 
 const (
-	defaultEnabled              = false
-	defaultPollInterval         = 30 * time.Second
-	defaultPageSize             = 50
-	defaultMaxPagesPerCycle     = 10
-	defaultDispatchConcurrency  = 2
-	defaultBatchSize            = 20
-	defaultLogBatchIDs          = false
-	defaultLogFailedItems       = false
+	defaultEnabled             = false
+	defaultPollInterval        = 30 * time.Second
+	defaultPageSize            = 50
+	defaultMaxPagesPerCycle    = 10
+	defaultDispatchConcurrency = 2
+	defaultBatchSize           = 20
+	defaultLogBatchIDs         = false
+	defaultLogFailedItems      = false
 )
 
 // Config defines runtime controls for the in-process scheduler.
 type Config struct {
-	Enabled              bool
-	PollInterval         time.Duration
-	PageSize             int
-	MaxPagesPerCycle     int
-	DispatchConcurrency  int
-	BatchSize            int
-	LogBatchIDs          bool
-	LogFailedItems       bool
+	Enabled             bool
+	PollInterval        time.Duration
+	PageSize            int
+	MaxPagesPerCycle    int
+	DispatchConcurrency int
+	BatchSize           int
+	LogBatchIDs         bool
+	LogFailedItems      bool
 }
 
 // ParseConfigFromEnv reads scheduler settings from environment variables.
@@ -36,14 +36,14 @@ type Config struct {
 // It returns a validated Config or an error when any value is malformed or out of range.
 func ParseConfigFromEnv() (Config, error) {
 	cfg := Config{
-		Enabled:              defaultEnabled,
-		PollInterval:         defaultPollInterval,
-		PageSize:             defaultPageSize,
-		MaxPagesPerCycle:     defaultMaxPagesPerCycle,
-		DispatchConcurrency:  defaultDispatchConcurrency,
-		BatchSize:            defaultBatchSize,
-		LogBatchIDs:          defaultLogBatchIDs,
-		LogFailedItems:       defaultLogFailedItems,
+		Enabled:             defaultEnabled,
+		PollInterval:        defaultPollInterval,
+		PageSize:            defaultPageSize,
+		MaxPagesPerCycle:    defaultMaxPagesPerCycle,
+		DispatchConcurrency: defaultDispatchConcurrency,
+		BatchSize:           defaultBatchSize,
+		LogBatchIDs:         defaultLogBatchIDs,
+		LogFailedItems:      defaultLogFailedItems,
 	}
 
 	enabledRaw := os.Getenv("SCHEDULER_ENABLED")

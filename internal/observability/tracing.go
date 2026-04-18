@@ -8,7 +8,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-const tracerName = "ai-advisor-impact-service"
+const tracerName = "ai-advisor-event-aggregator"
 
 func StartSpan(ctx context.Context, name string, opts ...trace.SpanStartOption) (context.Context, trace.Span) {
 	return otel.Tracer(tracerName).Start(ctx, name, opts...)

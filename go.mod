@@ -1,4 +1,4 @@
-module ai-advisor-impact-service
+module ai-advisor-event-aggregator
 
 go 1.26.1
 

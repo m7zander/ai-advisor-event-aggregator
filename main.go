@@ -14,14 +14,14 @@ import (
 	"syscall"
 	"time"
 
-	appevents "ai-advisor-impact-service/internal/app/events"
-	appextraction "ai-advisor-impact-service/internal/app/extraction"
-	appscheduler "ai-advisor-impact-service/internal/app/scheduler"
-	httpapi "ai-advisor-impact-service/internal/http"
-	"ai-advisor-impact-service/internal/logging"
-	"ai-advisor-impact-service/internal/upstream"
+	appevents "ai-advisor-event-aggregator/internal/app/events"
+	appextraction "ai-advisor-event-aggregator/internal/app/extraction"
+	appscheduler "ai-advisor-event-aggregator/internal/app/scheduler"
+	httpapi "ai-advisor-event-aggregator/internal/http"
+	"ai-advisor-event-aggregator/internal/logging"
+	"ai-advisor-event-aggregator/internal/upstream"
 
-	repopkg "ai-advisor-impact-service/internal/repository/extraction"
+	repopkg "ai-advisor-event-aggregator/internal/repository/extraction"
 	_ "github.com/lib/pq"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 	"go.opentelemetry.io/otel"
@@ -96,7 +96,7 @@ func main() {
 		otelEndpoint = "http://localhost:4318"
 	}
 	if otelServiceName == "" {
-		otelServiceName = "ai-advisor-impact-service"
+		otelServiceName = "ai-advisor-event-aggregator"
 	}
 	if dbDSN == "" {
 		fatalf(logger, "DATABASE_URL is required")

@@ -9,10 +9,10 @@ import (
 	"strings"
 	"time"
 
-	"ai-advisor-impact-service/internal/event"
-	"ai-advisor-impact-service/internal/extract"
-	"ai-advisor-impact-service/internal/logging"
-	"ai-advisor-impact-service/internal/observability"
+	"ai-advisor-event-aggregator/internal/event"
+	"ai-advisor-event-aggregator/internal/extract"
+	"ai-advisor-event-aggregator/internal/logging"
+	"ai-advisor-event-aggregator/internal/observability"
 )
 
 const clusteringCursorKey = "events_cluster_last_run_at"

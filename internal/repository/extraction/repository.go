@@ -11,8 +11,8 @@ import (
 	"strings"
 	"time"
 
-	"ai-advisor-impact-service/internal/extract"
-	"ai-advisor-impact-service/internal/observability"
+	"ai-advisor-event-aggregator/internal/extract"
+	"ai-advisor-event-aggregator/internal/observability"
 )
 
 const extractionSchemaSetup = `

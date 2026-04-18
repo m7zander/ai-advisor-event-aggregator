@@ -7,7 +7,7 @@ import (
 	"net/netip"
 	"strings"
 
-	"ai-advisor-impact-service/internal/logging"
+	"ai-advisor-event-aggregator/internal/logging"
 )
 
 const (
