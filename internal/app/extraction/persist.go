@@ -7,8 +7,8 @@ import (
 	"fmt"
 	"time"
 
-	"ai-advisor-impact-service/internal/extract"
-	repopkg "ai-advisor-impact-service/internal/repository/extraction"
+	"ai-advisor-event-aggregator/internal/extract"
+	repopkg "ai-advisor-event-aggregator/internal/repository/extraction"
 )
 
 const (

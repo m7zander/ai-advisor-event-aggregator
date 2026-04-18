@@ -5,7 +5,7 @@ import (
 	"context"
 	"time"
 
-	"ai-advisor-impact-service/internal/logging"
+	"ai-advisor-event-aggregator/internal/logging"
 )
 
 // Scheduler runs incremental clustering on a fixed interval using the persisted clustering cursor.

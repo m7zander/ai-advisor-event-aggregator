@@ -6,7 +6,7 @@ import (
 	"sort"
 	"time"
 
-	"ai-advisor-impact-service/internal/extract"
+	"ai-advisor-event-aggregator/internal/extract"
 )
 
 const (

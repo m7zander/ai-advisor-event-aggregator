@@ -6,7 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"ai-advisor-impact-service/internal/extract"
+	"ai-advisor-event-aggregator/internal/extract"
 )
 
 const extractorSystemPrompt = `You are performing structured event extraction for EXACTLY ONE preprocessed news article.

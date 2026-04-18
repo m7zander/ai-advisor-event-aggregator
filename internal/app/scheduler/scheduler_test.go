@@ -14,8 +14,8 @@ import (
 	"testing"
 	"time"
 
-	appextraction "ai-advisor-impact-service/internal/app/extraction"
-	"ai-advisor-impact-service/internal/logging"
+	appextraction "ai-advisor-event-aggregator/internal/app/extraction"
+	"ai-advisor-event-aggregator/internal/logging"
 )
 
 // fakeUpstreamClient is a deterministic upstream stub for scheduler tests.

@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"sync"
 
-	"ai-advisor-impact-service/internal/extract"
+	"ai-advisor-event-aggregator/internal/extract"
 )
 
 // PersistBatchItemResult contains per-article idempotent extraction outcome for persistence-integrated batch runs.

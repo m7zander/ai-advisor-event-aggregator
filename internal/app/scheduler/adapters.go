@@ -4,8 +4,8 @@ package scheduler
 import (
 	"context"
 
-	appextraction "ai-advisor-impact-service/internal/app/extraction"
-	"ai-advisor-impact-service/internal/upstream"
+	appextraction "ai-advisor-event-aggregator/internal/app/extraction"
+	"ai-advisor-event-aggregator/internal/upstream"
 )
 
 // AppBatchRunner adapts existing app-layer batch extraction into scheduler's runner contract.

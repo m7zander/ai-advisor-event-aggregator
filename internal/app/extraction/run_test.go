@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"ai-advisor-impact-service/internal/extract"
-	"ai-advisor-impact-service/internal/preprocess"
+	"ai-advisor-event-aggregator/internal/extract"
+	"ai-advisor-event-aggregator/internal/preprocess"
 )
 
 // fakeExtractor is a controllable test double for the Extractor dependency.

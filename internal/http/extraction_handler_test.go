@@ -13,11 +13,11 @@ import (
 	"testing"
 	"time"
 
-	appextraction "ai-advisor-impact-service/internal/app/extraction"
-	"ai-advisor-impact-service/internal/extract"
-	"ai-advisor-impact-service/internal/logging"
-	repopkg "ai-advisor-impact-service/internal/repository/extraction"
-	"ai-advisor-impact-service/internal/upstream"
+	appextraction "ai-advisor-event-aggregator/internal/app/extraction"
+	"ai-advisor-event-aggregator/internal/extract"
+	"ai-advisor-event-aggregator/internal/logging"
+	repopkg "ai-advisor-event-aggregator/internal/repository/extraction"
+	"ai-advisor-event-aggregator/internal/upstream"
 )
 
 // fakeExtractor is a deterministic test extractor for HTTP endpoint tests.

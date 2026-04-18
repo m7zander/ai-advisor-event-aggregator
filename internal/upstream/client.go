@@ -9,9 +9,9 @@ import (
 	"net/http"
 	"time"
 
-	"ai-advisor-impact-service/internal/logging"
-	"ai-advisor-impact-service/internal/model"
-	"ai-advisor-impact-service/internal/observability"
+	"ai-advisor-event-aggregator/internal/logging"
+	"ai-advisor-event-aggregator/internal/model"
+	"ai-advisor-event-aggregator/internal/observability"
 )
 
 const (

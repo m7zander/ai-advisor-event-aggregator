@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
-	"ai-advisor-impact-service/internal/extract"
-	"ai-advisor-impact-service/internal/logging"
+	"ai-advisor-event-aggregator/internal/extract"
+	"ai-advisor-event-aggregator/internal/logging"
 )
 
 // validInput returns a contract-valid extractor input used by llm client tests.

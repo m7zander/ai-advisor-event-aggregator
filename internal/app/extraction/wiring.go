@@ -7,8 +7,8 @@ import (
 	"strings"
 	"time"
 
-	"ai-advisor-impact-service/internal/llm"
-	"ai-advisor-impact-service/internal/model"
+	"ai-advisor-event-aggregator/internal/llm"
+	"ai-advisor-event-aggregator/internal/model"
 )
 
 // LLMConfig contains minimal constructor config for the real LLM-backed extractor.

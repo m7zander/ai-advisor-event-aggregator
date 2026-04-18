@@ -5,7 +5,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"ai-advisor-impact-service/internal/logging"
+	"ai-advisor-event-aggregator/internal/logging"
 )
 
 func TestRequestIDMiddleware_Passthrough(t *testing.T) {

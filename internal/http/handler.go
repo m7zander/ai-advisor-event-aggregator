@@ -14,15 +14,15 @@ import (
 	"strconv"
 	"time"
 
-	appextraction "ai-advisor-impact-service/internal/app/extraction"
-	"ai-advisor-impact-service/internal/event"
-	"ai-advisor-impact-service/internal/extract"
-	"ai-advisor-impact-service/internal/logging"
-	"ai-advisor-impact-service/internal/model"
-	"ai-advisor-impact-service/internal/observability"
-	"ai-advisor-impact-service/internal/preprocess"
-	repopkg "ai-advisor-impact-service/internal/repository/extraction"
-	"ai-advisor-impact-service/internal/upstream"
+	appextraction "ai-advisor-event-aggregator/internal/app/extraction"
+	"ai-advisor-event-aggregator/internal/event"
+	"ai-advisor-event-aggregator/internal/extract"
+	"ai-advisor-event-aggregator/internal/logging"
+	"ai-advisor-event-aggregator/internal/model"
+	"ai-advisor-event-aggregator/internal/observability"
+	"ai-advisor-event-aggregator/internal/preprocess"
+	repopkg "ai-advisor-event-aggregator/internal/repository/extraction"
+	"ai-advisor-event-aggregator/internal/upstream"
 )
 
 // extractionRepository describes repository methods needed by extraction HTTP endpoints.

@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"ai-advisor-impact-service/internal/event"
-	"ai-advisor-impact-service/internal/extract"
+	"ai-advisor-event-aggregator/internal/event"
+	"ai-advisor-event-aggregator/internal/extract"
 )
 
 func TestRepository_ListSuccessfulExtractionsSince(t *testing.T) {

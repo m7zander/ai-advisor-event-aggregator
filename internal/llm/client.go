@@ -13,8 +13,8 @@ import (
 	"strings"
 	"time"
 
-	"ai-advisor-impact-service/internal/extract"
-	"ai-advisor-impact-service/internal/logging"
+	"ai-advisor-event-aggregator/internal/extract"
+	"ai-advisor-event-aggregator/internal/logging"
 )
 
 const defaultBaseURL = "https://api.openai.com/v1"

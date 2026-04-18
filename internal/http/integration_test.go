@@ -12,10 +12,10 @@ import (
 	"testing"
 	"time"
 
-	"ai-advisor-impact-service/internal/event"
-	"ai-advisor-impact-service/internal/model"
-	"ai-advisor-impact-service/internal/preprocess"
-	"ai-advisor-impact-service/internal/upstream"
+	"ai-advisor-event-aggregator/internal/event"
+	"ai-advisor-event-aggregator/internal/model"
+	"ai-advisor-event-aggregator/internal/preprocess"
+	"ai-advisor-event-aggregator/internal/upstream"
 )
 
 func TestPreprocessIntegration(t *testing.T) {
