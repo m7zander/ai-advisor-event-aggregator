@@ -1,3 +1,4 @@
+-- Legacy artifact notice: this historical migration includes an impact-table rename path that is no longer used by runtime code.
 BEGIN;
 
 ALTER TABLE IF EXISTS article_extractions RENAME TO impact_service_article_extractions;
