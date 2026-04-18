@@ -131,7 +131,7 @@ Nicht im Scope:
 - `UPSTREAM_PORT`
 - `OPENAI_API_KEY`
 - `OPENAI_MODEL`
-- `EXTRACT_DB_DSN` (PostgreSQL DSN)
+- `DATABASE_URL` (PostgreSQL DSN)
 
 ### Optionale Variablen mit Default
 
