@@ -7,7 +7,6 @@ import (
 	"math"
 	"sort"
 	"strings"
-	"sync/atomic"
 	"time"
 
 	appextraction "ai-advisor-impact-service/internal/app/extraction"
@@ -62,17 +61,10 @@ type UpstreamArticle struct {
 
 // Scheduler continuously polls upstream and dispatches discovered article IDs for extraction.
 type Scheduler struct {
-	upstreamClient     UpstreamClient
-	runner             ExtractionBatchRunner
-	logger             *logging.Logger
-	cfg                Config
-	impactRecalculator ImpactRecalculator
-	impactRunning      atomic.Bool
-}
-
-// ImpactRecalculator defines the impact recomputation job.
-type ImpactRecalculator interface {
-	RecalculateImpacts(ctx context.Context) error
+	upstreamClient UpstreamClient
+	runner         ExtractionBatchRunner
+	logger         *logging.Logger
+	cfg            Config
 }
 
 // CycleStats captures one scheduler cycle aggregate accounting.
@@ -115,22 +107,12 @@ func New(upstreamClient UpstreamClient, runner ExtractionBatchRunner, logger *lo
 	return &Scheduler{upstreamClient: upstreamClient, runner: runner, logger: logger, cfg: cfg}, nil
 }
 
-// SetImpactRecalculator attaches an optional periodic impact recomputation job.
-func (s *Scheduler) SetImpactRecalculator(recalculator ImpactRecalculator) {
-	s.impactRecalculator = recalculator
-}
-
 // Run starts the continuous scheduler loop and blocks until context cancellation.
 // The ctx parameter controls graceful shutdown and cycle cancellation.
 // It returns nil when the context is canceled, or an error for unrecoverable setup failures.
 func (s *Scheduler) Run(ctx context.Context) error {
 	ticker := timeNewTicker(s.cfg.PollInterval)
 	defer ticker.Stop()
-	var impactTicker *time.Ticker
-	if s.impactRecalculator != nil && s.cfg.ImpactRecalcInterval > 0 {
-		impactTicker = time.NewTicker(s.cfg.ImpactRecalcInterval)
-		defer impactTicker.Stop()
-	}
 
 	s.runCycleWithLogging(ctx)
 
@@ -141,40 +123,8 @@ func (s *Scheduler) Run(ctx context.Context) error {
 			return nil
 		case <-ticker.C:
 			s.runCycleWithLogging(ctx)
-		case <-impactTickerChannel(impactTicker):
-			s.runImpactCycle(ctx)
 		}
 	}
-}
-
-func impactTickerChannel(ticker *time.Ticker) <-chan time.Time {
-	if ticker == nil {
-		return nil
-	}
-	return ticker.C
-}
-
-func (s *Scheduler) runImpactCycle(ctx context.Context) {
-	if s.impactRecalculator == nil {
-		return
-	}
-	if !s.impactRunning.CompareAndSwap(false, true) {
-		s.logger.Info(ctx, "app.scheduler.impact_cycle_skipped_overlap", "app/scheduler", "impact cycle skipped due to overlapping run")
-		return
-	}
-	started := time.Now().UTC()
-	s.logger.Info(ctx, "app.scheduler.impact_cycle_started", "app/scheduler", "impact recomputation cycle started")
-	defer s.impactRunning.Store(false)
-
-	if err := s.impactRecalculator.RecalculateImpacts(ctx); err != nil {
-		s.logger.Error(ctx, "app.scheduler.impact_cycle_failed", "app/scheduler", "impact recomputation cycle failed", err,
-			logging.Field{Key: "duration_ms", Value: time.Since(started).Milliseconds()},
-		)
-		return
-	}
-	s.logger.Info(ctx, "app.scheduler.impact_cycle_completed", "app/scheduler", "impact recomputation cycle completed",
-		logging.Field{Key: "duration_ms", Value: time.Since(started).Milliseconds()},
-	)
 }
 
 // runCycleWithLogging executes one cycle and emits final success/failure logging.

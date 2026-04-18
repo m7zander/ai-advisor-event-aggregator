@@ -17,7 +17,6 @@ const (
 	defaultBatchSize            = 20
 	defaultLogBatchIDs          = false
 	defaultLogFailedItems       = false
-	defaultImpactRecalcInterval = 30 * time.Minute
 )
 
 // Config defines runtime controls for the in-process scheduler.
@@ -30,7 +29,6 @@ type Config struct {
 	BatchSize            int
 	LogBatchIDs          bool
 	LogFailedItems       bool
-	ImpactRecalcInterval time.Duration
 }
 
 // ParseConfigFromEnv reads scheduler settings from environment variables.
@@ -46,7 +44,6 @@ func ParseConfigFromEnv() (Config, error) {
 		BatchSize:            defaultBatchSize,
 		LogBatchIDs:          defaultLogBatchIDs,
 		LogFailedItems:       defaultLogFailedItems,
-		ImpactRecalcInterval: defaultImpactRecalcInterval,
 	}
 
 	enabledRaw := os.Getenv("SCHEDULER_ENABLED")
@@ -119,15 +116,6 @@ func ParseConfigFromEnv() (Config, error) {
 			return Config{}, fmt.Errorf("parse SCHEDULER_LOG_BATCH_IDS: %w", err)
 		}
 		cfg.LogBatchIDs = logBatchIDs
-	}
-
-	impactIntervalRaw := os.Getenv("IMPACT_RECALC_SCHEDULE_INTERVAL_MINUTES")
-	if impactIntervalRaw != "" {
-		minutes, err := strconv.Atoi(impactIntervalRaw)
-		if err != nil || minutes <= 0 {
-			return Config{}, fmt.Errorf("IMPACT_RECALC_SCHEDULE_INTERVAL_MINUTES must be > 0")
-		}
-		cfg.ImpactRecalcInterval = time.Duration(minutes) * time.Minute
 	}
 
 	return cfg, nil
