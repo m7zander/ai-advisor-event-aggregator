@@ -29,9 +29,7 @@ Nicht im Scope:
 - `internal/universe/store`: thread-safe In-Memory Snapshot Store mit einmaligem Startup-Load.
 - `internal/preprocess`: Deterministische Textbereinigung.
 - `internal/app/extraction`: Use-Cases für Einzel-/Batch-Extraktion.
-- `internal/app/impact`: Batch-Recalculation-Service für Event→Security-Impacts.
 - `internal/repository/extraction`: Repository + Runtime-Migrationen für Extraktion/Event.
-- `internal/repository/impact`: Repository + Runtime-Migration für `impact_service_event_security_impacts`.
 - `internal/app/events`: Event-Service.
 - `internal/app/events/scheduler`: Scheduler für periodisches Clustering neuer Extraction-Ergebnisse.
 - `internal/app/scheduler`: Polling-/Batch-Scheduler für automatische Extraktionsläufe.
@@ -46,7 +44,6 @@ Nicht im Scope:
 2. `internal/app/events/scheduler`
    - Zweck: periodisches Clustering neuer Extraction-Ergebnisse.
    - Intervall: `CLUSTER_SCHEDULE_INTERVAL_MINUTES`.
-   - Impact-Recalculation-Intervall: `IMPACT_RECALC_SCHEDULE_INTERVAL_MINUTES` (wird vom jeweils aktiven Recalculator-Scheduler genutzt, siehe Ablauf unten).
 
 ## Request-Flow
 
@@ -87,39 +84,6 @@ Das Paket `internal/impact/rules` enthält den zentralen, versionierten Regelsta
 - `Validate()` prüft Konsistenz und sichere Mindestanforderungen.
 
 Es gibt aktuell keine Runtime-Editierung und keinen Dateilader für Regeln; Erweiterungen erfolgen kontrolliert im Code.
-
-## Impact Engine
-
-Der Impact-Engine-Flow läuft deterministisch ohne LLM:
-
-1. Aktive aggregierte Events werden geladen.
-2. Universe-Snapshot-Securities werden gelesen.
-3. Für jedes Event×Security-Paar wird ein `EventSecurityImpact` berechnet.
-4. Ergebnisse unterhalb `IMPACT_MIN_SCORE` oder mit neutraler Richtung werden verworfen.
-5. Verbleibende Impacts werden als Batch per Upsert in `impact_service_event_security_impacts` persistiert.
-
-Persistierte Tabelle:
-
-- Kanonischer Service-Präfix für Persistenzobjekte: `impact_service_`
-- `impact_service_event_security_impacts` (PK: `event_id, security_code, rule_version`)
-- Indizes: `event_id`, `security_code`, `impact_score DESC`
-
-## Impact Aggregation
-
-Aggregation für eine Security wird **on-demand** berechnet (kein Cache, keine Materialized View):
-
-1. `impact_service_event_security_impacts` für `security_code` laden.
-2. Nur Impacts von Events mit Status `active` berücksichtigen.
-3. Aggregation deterministisch berechnen:
-   - `positive_impact_score`: Summe positiver Impact-Scores
-   - `negative_impact_score`: Summe absoluter negativer Impact-Scores
-   - `net_impact_score = positive_impact_score - negative_impact_score`
-   - `impact_direction`: aus Net-Score und Rule-Set-Threshold (`positive|negative|neutral`)
-   - `active_event_count`
-   - `top_event_ids` (Top 3 nach absolutem `impact_score`)
-   - `top_explanation_codes` (Top 5 nach Häufigkeit)
-
-Es gibt dafür **keinen Scheduler**, **kein Refresh-Intervall** und **keine zusätzliche Persistenz**.
 
 ## HTTP API
 
@@ -178,79 +142,6 @@ Es gibt dafür **keinen Scheduler**, **kein Refresh-Intervall** und **keine zus�
 - Antwort: `200` mit JSON-Liste aggregierter Events und effektiven Filtern.
 - Validierung: ungültige Query-Parameter -> `400`.
 
-### `GET /api/events/{event_id}/securities`
-
-- Zweck: Impacts eines Events auf Securities paginiert abrufen.
-- Path-Parameter:
-  - `event_id` (required)
-- Query-Parameter:
-  - `limit` (Default `50`, Max `200`)
-  - `offset` (Default `0`)
-  - `min_score` (Default `0`)
-  - `direction` (`positive|negative`, optional)
-- Antwort: `200` mit JSON-Objekt (`event_id`, `items`, `limit`, `offset`, `total`).
-- Validierung: ungültige Filter oder leere `event_id` -> `400`.
-
-### `GET /api/securities/{code}/impacts`
-
-- Zweck: on-demand aggregierte Impact-Sicht für eine Security plus Event-Liste.
-- Path-Parameter:
-  - `code` (required)
-- Query-Parameter:
-  - `limit` (optional, `1..200`, default `50`)
-  - `offset` (optional, `>=0`, default `0`)
-  - `min_score` (optional, `>=0`, default `0`)
-- Antwort: `200` mit JSON (`security`, `summary`, `events`).
-- Validierung: ungültige Query-Werte oder leerer `code` -> `400`.
-
-### New API Endpoint: `GET /api/securities/{code}/impacts`
-
-Request:
-
-- Path Parameter: `code` (required)
-- Query Parameter:
-  - `limit` (optional, `1..200`, default `50`)
-  - `offset` (optional, `>=0`, default `0`)
-  - `min_score` (optional, `>=0`, default `0`)
-
-Response (Beispiel):
-
-```json
-{
-  "security": {
-    "code": "AAA",
-    "name": "Alpha Corp",
-    "isin": "US0000000001"
-  },
-  "summary": {
-    "security_code": "AAA",
-    "positive_impact_score": 62.0,
-    "negative_impact_score": 21.0,
-    "net_impact_score": 41.0,
-    "impact_direction": "positive",
-    "active_event_count": 3,
-    "top_event_ids": ["evt-9", "evt-4", "evt-2"],
-    "top_explanation_codes": ["geo:middle_east", "sector:energy", "event_type:geopolitical"]
-  },
-  "events": [
-    {
-      "event_id": "evt-9",
-      "impact_score": 35,
-      "impact_direction": "positive",
-      "impact_confidence": 0.82,
-      "explanation_codes": ["geo:middle_east", "sector:energy"]
-    }
-  ]
-}
-```
-
-Sorting-Regeln:
-
-- `events` sind nach absolutem `impact_score` absteigend sortiert.
-- `summary.top_event_ids` sind nach absolutem `impact_score` absteigend sortiert.
-- `summary.top_explanation_codes` sind nach Häufigkeit absteigend sortiert.
-- Sowohl `summary` als auch `events` berücksichtigen ausschließlich Events mit Status `active`.
-
 ## Validierung & Fehlerverhalten
 
 - Ungültige Methoden -> `405`.
@@ -286,7 +177,7 @@ Sorting-Regeln:
 - `HTTP_SERVER_WRITE_TIMEOUT` (Default: `15s`)
 - `HTTP_SERVER_IDLE_TIMEOUT` (Default: `60s`)
 - `IMPACT_MIN_SCORE` (Default: `10`)
-- `IMPACT_RECALC_SCHEDULE_INTERVAL_MINUTES` (Default: `30`, durch Scheduler verwendet)
+- `IMPACT_RECALC_SCHEDULE_INTERVAL_MINUTES` (Default: `30`, aktuell reserviert)
 
 #### Extraktions-Scheduler (`internal/app/scheduler`)
 
@@ -327,10 +218,9 @@ Die Scheduler-Konfiguration wird über `internal/app/scheduler/config.go::ParseC
 - `IMPACT_RECALC_SCHEDULE_INTERVAL_MINUTES`
   - Default: `30`
   - Typ/Wertebereich: Integer in Minuten, `> 0`
-  - Wirkung: Steuert das Intervall für automatische Impact-Recalculation-Läufe im Scheduler.
+  - Wirkung: Reservierte Kompatibilitätsvariable (derzeit kein aktiver Recalculator-Job).
 
 Ohne `SCHEDULER_ENABLED=true` findet keine automatische Extraktions-Polling/Batch-Verarbeitung statt; Extraktion erfolgt dann nur über API-Endpoints.
-Wenn `SCHEDULER_ENABLED=false`, triggert `internal/app/events/scheduler` die Impact-Recalculation im Intervall `IMPACT_RECALC_SCHEDULE_INTERVAL_MINUTES` nach seinen Clustering-Zyklen. Wenn `SCHEDULER_ENABLED=true`, setzt `main.go` den Impact-Recalculator stattdessen auf `internal/app/scheduler`; dann triggert der Extraktions-Scheduler die Recalculation im selben Intervall und der Event-Scheduler clustert weiterhin periodisch über `CLUSTER_SCHEDULE_INTERVAL_MINUTES`.
 `UNIVERSE_BASE_URL` und `UNIVERSE_TIMEOUT_MS` werden beim Startup für den einmaligen Universe-Load verwendet. Fehlende/ungültige Werte oder eine ungültige Universe-Antwort führen zum Startup-Abbruch.
 
 ## Observability (OpenTelemetry)
@@ -408,30 +298,10 @@ Reihenfolge der CI-Schritte:
 - Startup ist Fail-Fast bei ungültiger Konfiguration.
 - Repository-Migrationen für Extraktion/Events laufen beim Startup.
 - Universe-Daten werden nur einmal beim Startup geladen und ausschließlich in-memory gehalten (kein Refresh, kein Scheduler, keine Persistenz, kein Reload-Endpunkt).
-- Impact-Recalculation läuft als Scheduler-Job in festen Intervallen; überlappende Läufe werden verhindert.
-
 ### Scheduler-Betriebsmodi (main.go)
 
 - **Modus A: `SCHEDULER_ENABLED=false`**
-  - `internal/app/events/scheduler` läuft immer und clustert periodisch gemäß `CLUSTER_SCHEDULE_INTERVAL_MINUTES`.
-  - Zusätzlich wird via `eventScheduler.SetImpactRecalculator(...)` die Impact-Recalculation an den Event-Scheduler gebunden.
-  - Das Recalculation-Intervall bleibt `IMPACT_RECALC_SCHEDULE_INTERVAL_MINUTES`.
+  - `internal/app/events/scheduler` läuft und clustert periodisch gemäß `CLUSTER_SCHEDULE_INTERVAL_MINUTES`.
 - **Modus B: `SCHEDULER_ENABLED=true`**
   - `internal/app/events/scheduler` läuft weiterhin für Clustering gemäß `CLUSTER_SCHEDULE_INTERVAL_MINUTES`.
-  - Die Impact-Recalculation wird via `scheduler.SetImpactRecalculator(...)` an `internal/app/scheduler` gebunden.
-  - `internal/app/scheduler` übernimmt automatische Extraktions-Polling/Batch-Läufe und triggert die Recalculation im Intervall `IMPACT_RECALC_SCHEDULE_INTERVAL_MINUTES`.
-
-## Architecture Update (Impact Chain)
-
-Deterministischer Datenfluss für Impact-Ausgabe:
-
-1. `impact_service_aggregated_events`
-2. → `impact_service_event_security_impacts` (persistierte Event→Security-Impacts)
-3. → Aggregation pro Security (on-demand im App-Layer)
-4. → API-Response über `GET /api/securities/{code}/impacts`
-
-Für diese Aggregation existieren bewusst:
-
-- kein Scheduler
-- kein Refresh-Intervall
-- keine Materialized View
+  - `internal/app/scheduler` übernimmt zusätzliche automatische Extraktions-Polling/Batch-Läufe.

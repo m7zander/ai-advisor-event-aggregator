@@ -10,24 +10,18 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"math"
 	"net/http"
-	"regexp"
 	"strconv"
-	"strings"
 	"time"
 
 	appextraction "ai-advisor-impact-service/internal/app/extraction"
-	appimpact "ai-advisor-impact-service/internal/app/impact"
 	"ai-advisor-impact-service/internal/event"
 	"ai-advisor-impact-service/internal/extract"
-	impactdomain "ai-advisor-impact-service/internal/impact"
 	"ai-advisor-impact-service/internal/logging"
 	"ai-advisor-impact-service/internal/model"
 	"ai-advisor-impact-service/internal/observability"
 	"ai-advisor-impact-service/internal/preprocess"
 	repopkg "ai-advisor-impact-service/internal/repository/extraction"
-	universestore "ai-advisor-impact-service/internal/universe/store"
 	"ai-advisor-impact-service/internal/upstream"
 )
 
@@ -45,7 +39,6 @@ type Handler struct {
 	extractor      appextraction.Extractor
 	repo           extractionRepository
 	clusterService clusterService
-	impactService  impactService
 	extractorModel string
 	logger         *logging.Logger
 }
@@ -54,14 +47,6 @@ type Handler struct {
 type clusterService interface {
 	ListEvents(ctx context.Context, limit int, since *time.Time, until *time.Time) ([]event.Event, error)
 }
-
-type impactService interface {
-	GetEventSecurities(ctx context.Context, eventID string, filters appimpact.EventSecurityFilters) ([]impactdomain.EventSecurityImpact, error)
-	GetSecurityImpacts(ctx context.Context, code string, filters appimpact.SecurityImpactFilters) (universestore.SecurityProfile, []impactdomain.EventSecurityImpact, appimpact.SecurityImpactAggregate, error)
-	CountByEventIDs(ctx context.Context, eventIDs []string) (map[string]int, error)
-}
-
-var securityCodePattern = regexp.MustCompile(`^[A-Za-z0-9._-]{1,64}$`)
 
 // NewHandler constructs an HTTP handler with preprocess-only dependencies.
 // The upstreamClient parameter provides upstream article access.
@@ -91,11 +76,6 @@ func NewHandlerWithExtractionAndClustering(upstreamClient *upstream.Client, extr
 	}
 }
 
-// AttachImpactService wires optional impact read service used by impact query endpoints.
-func (h *Handler) AttachImpactService(service impactService) {
-	h.impactService = service
-}
-
 // Register wires all HTTP routes for this handler on the provided mux.
 // The mux parameter is mutated with route registrations.
 // It has no return value.
@@ -107,8 +87,6 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/api/extract/run-batch", h.extractRunBatch)
 	mux.HandleFunc("/api/extract/result", h.extractResult)
 	mux.HandleFunc("/api/events", h.listEvents)
-	mux.HandleFunc("/api/events/", h.eventSubroutes)
-	mux.HandleFunc("/api/securities/", h.securitySubroutes)
 }
 
 // health handles service liveness requests.
@@ -506,309 +484,13 @@ func (h *Handler) listEvents(w http.ResponseWriter, r *http.Request) {
 		logging.Field{Key: "returned", Value: len(events)},
 	)
 	eventsPayload := make([]map[string]any, 0, len(events))
-	eventIDs := make([]string, 0, len(events))
-	for _, evt := range events {
-		eventIDs = append(eventIDs, evt.ID)
-	}
-	countByEvent := map[string]int{}
-	if h.impactService != nil && len(eventIDs) > 0 {
-		counts, countErr := h.impactService.CountByEventIDs(r.Context(), eventIDs)
-		if countErr != nil {
-			observability.RecordError(span, countErr)
-			h.logger.ErrorWithContract(r.Context(), "http.events.count_query_failed", "http/events", "event impact count query failed", countErr, logging.ErrorContract{
-				Failure:        "event_impact_count_query_failed",
-				Cause:          countErr.Error(),
-				SanitizedInput: fmt.Sprintf(`{"event_count":%d}`, len(eventIDs)),
-				Reaction:       "returned http 500",
-			})
-			http.Error(w, "failed to load events", http.StatusInternalServerError)
-			return
-		}
-		countByEvent = counts
-	}
 	for _, evt := range events {
 		eventsPayload = append(eventsPayload, map[string]any{
 			"event":                   evt,
-			"affected_security_count": countByEvent[evt.ID],
+			"affected_security_count": 0,
 		})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"limit": limit, "since": sincePtr, "until": untilPtr, "events": eventsPayload})
-}
-
-func (h *Handler) eventSubroutes(w http.ResponseWriter, r *http.Request) {
-	if !strings.HasSuffix(r.URL.Path, "/securities") {
-		http.NotFound(w, r)
-		return
-	}
-	h.getEventSecurities(w, r)
-}
-
-type eventSecuritiesResponse struct {
-	EventID string                         `json:"event_id"`
-	Count   int                            `json:"count"`
-	Data    []eventSecurityImpactViewModel `json:"data"`
-}
-
-type eventSecurityImpactViewModel struct {
-	Code                string   `json:"code"`
-	Name                string   `json:"name"`
-	ISIN                string   `json:"isin"`
-	ImpactDirection     string   `json:"impact_direction"`
-	ImpactScore         float64  `json:"impact_score"`
-	ImpactConfidence    float64  `json:"impact_confidence"`
-	GeoMatchScore       float64  `json:"geo_match_score"`
-	CountryMatchScore   float64  `json:"country_match_score"`
-	SectorMatchScore    float64  `json:"sector_match_score"`
-	EventTypeMatchScore float64  `json:"event_type_match_score"`
-	ProfileConfidence   float64  `json:"profile_confidence"`
-	ExplanationCodes    []string `json:"explanation_codes"`
-}
-
-func (h *Handler) getEventSecurities(w http.ResponseWriter, r *http.Request) {
-	ctx, span := observability.StartSpan(r.Context(), "http.get_event_securities")
-	defer span.End()
-	r = r.WithContext(ctx)
-
-	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	if h.impactService == nil {
-		http.Error(w, "impact service not configured", http.StatusInternalServerError)
-		return
-	}
-	eventID := strings.TrimPrefix(r.URL.Path, "/api/events/")
-	eventID = strings.TrimSuffix(eventID, "/securities")
-	eventID = strings.TrimSpace(eventID)
-	if eventID == "" || len(eventID) > 256 {
-		http.Error(w, "invalid event_id", http.StatusBadRequest)
-		return
-	}
-
-	filters, badReq := parseImpactQueryFilters(r, true)
-	if badReq != "" {
-		http.Error(w, badReq, http.StatusBadRequest)
-		return
-	}
-	var direction *impactdomain.ImpactDirection
-	if filters.Direction != "" {
-		d := impactdomain.ImpactDirection(filters.Direction)
-		direction = &d
-	}
-	results, err := h.impactService.GetEventSecurities(r.Context(), eventID, appimpact.EventSecurityFilters{
-		Limit:     filters.Limit,
-		Offset:    filters.Offset,
-		MinScore:  filters.MinScore,
-		Direction: direction,
-	})
-	if err != nil {
-		observability.RecordError(span, err)
-		if errors.Is(err, appimpact.ErrEventNotFound) {
-			http.Error(w, "event not found", http.StatusNotFound)
-			return
-		}
-		h.logger.ErrorWithContract(r.Context(), "http.event_securities.query_failed", "http/event-securities", "event securities query failed", err, logging.ErrorContract{
-			Failure:        "event_securities_query_failed",
-			Cause:          err.Error(),
-			SanitizedInput: fmt.Sprintf(`{"event_id":"%s","limit":%d,"offset":%d}`, eventID, filters.Limit, filters.Offset),
-			Reaction:       "returned http 500",
-		},
-			logging.Field{Key: "event_id", Value: eventID},
-		)
-		http.Error(w, "failed to load event securities", http.StatusInternalServerError)
-		return
-	}
-	data := make([]eventSecurityImpactViewModel, 0, len(results))
-	for _, item := range results {
-		data = append(data, eventSecurityImpactViewModel{
-			Code:                item.SecurityCode,
-			Name:                item.SecurityName,
-			ISIN:                item.ISIN,
-			ImpactDirection:     item.ImpactDirection.String(),
-			ImpactScore:         item.ImpactScore,
-			ImpactConfidence:    item.ImpactConfidence,
-			GeoMatchScore:       item.GeoMatchScore,
-			CountryMatchScore:   item.CountryMatchScore,
-			SectorMatchScore:    item.SectorMatchScore,
-			EventTypeMatchScore: item.EventTypeMatchScore,
-			ProfileConfidence:   item.ProfileConfidence,
-			ExplanationCodes:    item.ExplanationCodes,
-		})
-	}
-	h.logger.Info(r.Context(), "http.event_securities.query_completed", "http/event-securities", "event securities query completed",
-		logging.Field{Key: "event_id", Value: eventID},
-		logging.Field{Key: "limit", Value: filters.Limit},
-		logging.Field{Key: "offset", Value: filters.Offset},
-		logging.Field{Key: "min_score", Value: filters.MinScore},
-		logging.Field{Key: "direction", Value: filters.Direction},
-		logging.Field{Key: "count", Value: len(data)},
-	)
-	writeJSON(w, http.StatusOK, eventSecuritiesResponse{EventID: eventID, Count: len(data), Data: data})
-}
-
-func (h *Handler) securitySubroutes(w http.ResponseWriter, r *http.Request) {
-	if !strings.HasSuffix(r.URL.Path, "/impacts") {
-		http.NotFound(w, r)
-		return
-	}
-	h.getSecurityImpacts(w, r)
-}
-
-type securityImpactsResponse struct {
-	Security securityView            `json:"security"`
-	Summary  securityImpactAggregate `json:"summary"`
-	Events   []securityImpactData    `json:"events"`
-}
-
-type securityImpactAggregate struct {
-	SecurityCode        string   `json:"security_code"`
-	PositiveScore       float64  `json:"positive_impact_score"`
-	NegativeScore       float64  `json:"negative_impact_score"`
-	NetScore            float64  `json:"net_impact_score"`
-	ImpactDirection     string   `json:"impact_direction"`
-	ActiveEventCount    int      `json:"active_event_count"`
-	TopEventIDs         []string `json:"top_event_ids"`
-	TopExplanationCodes []string `json:"top_explanation_codes"`
-}
-
-type securityView struct {
-	Code string `json:"code"`
-	Name string `json:"name"`
-	ISIN string `json:"isin,omitempty"`
-}
-
-type securityImpactData struct {
-	EventID          string   `json:"event_id"`
-	ImpactDirection  string   `json:"impact_direction"`
-	ImpactScore      float64  `json:"impact_score"`
-	ImpactConfidence float64  `json:"impact_confidence"`
-	ExplanationCodes []string `json:"explanation_codes"`
-}
-
-func (h *Handler) getSecurityImpacts(w http.ResponseWriter, r *http.Request) {
-	ctx, span := observability.StartSpan(r.Context(), "http.get_security_impacts")
-	defer span.End()
-	r = r.WithContext(ctx)
-
-	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	if h.impactService == nil {
-		http.Error(w, "impact service not configured", http.StatusInternalServerError)
-		return
-	}
-	code := strings.TrimPrefix(r.URL.Path, "/api/securities/")
-	code = strings.TrimSuffix(code, "/impacts")
-	code = strings.TrimSpace(code)
-	if code == "" || len(code) > 64 || !securityCodePattern.MatchString(code) {
-		http.Error(w, "invalid code", http.StatusBadRequest)
-		return
-	}
-	filters, badReq := parseImpactQueryFilters(r, false)
-	if badReq != "" {
-		http.Error(w, badReq, http.StatusBadRequest)
-		return
-	}
-	security, impacts, aggregate, err := h.impactService.GetSecurityImpacts(r.Context(), code, appimpact.SecurityImpactFilters{
-		Limit:    filters.Limit,
-		Offset:   filters.Offset,
-		MinScore: filters.MinScore,
-	})
-	if err != nil {
-		observability.RecordError(span, err)
-		if errors.Is(err, appimpact.ErrSecurityNotFound) {
-			http.Error(w, "security not found", http.StatusNotFound)
-			return
-		}
-		h.logger.ErrorWithContract(r.Context(), "http.security_impacts.query_failed", "http/security-impacts", "security impacts query failed", err, logging.ErrorContract{
-			Failure:        "security_impacts_query_failed",
-			Cause:          err.Error(),
-			SanitizedInput: fmt.Sprintf(`{"code":"%s","limit":%d,"offset":%d}`, code, filters.Limit, filters.Offset),
-			Reaction:       "returned http 500",
-		},
-			logging.Field{Key: "code", Value: code},
-		)
-		http.Error(w, "failed to load security impacts", http.StatusInternalServerError)
-		return
-	}
-	data := make([]securityImpactData, 0, len(impacts))
-	for _, item := range impacts {
-		data = append(data, securityImpactData{
-			EventID:          item.EventID,
-			ImpactDirection:  item.ImpactDirection.String(),
-			ImpactScore:      item.ImpactScore,
-			ImpactConfidence: item.ImpactConfidence,
-			ExplanationCodes: item.ExplanationCodes,
-		})
-	}
-	h.logger.Info(r.Context(), "http.security_impacts.query_completed", "http/security-impacts", "security impacts query completed",
-		logging.Field{Key: "code", Value: code},
-		logging.Field{Key: "limit", Value: filters.Limit},
-		logging.Field{Key: "offset", Value: filters.Offset},
-		logging.Field{Key: "min_score", Value: filters.MinScore},
-		logging.Field{Key: "count", Value: len(data)},
-		logging.Field{Key: "summary_direction", Value: aggregate.Direction.String()},
-		logging.Field{Key: "summary_active_event_count", Value: aggregate.ActiveEvents},
-	)
-	writeJSON(w, http.StatusOK, securityImpactsResponse{
-		Security: securityView{
-			Code: security.Code,
-			Name: security.Name,
-			ISIN: security.ISIN,
-		},
-		Summary: securityImpactAggregate{
-			SecurityCode:        security.Code,
-			PositiveScore:       aggregate.PositiveScore,
-			NegativeScore:       aggregate.NegativeScore,
-			NetScore:            aggregate.NetScore,
-			ImpactDirection:     aggregate.Direction.String(),
-			ActiveEventCount:    aggregate.ActiveEvents,
-			TopEventIDs:         aggregate.TopEventIDs,
-			TopExplanationCodes: aggregate.TopDrivers,
-		},
-		Events: data,
-	})
-}
-
-type impactQueryFilters struct {
-	Limit     int
-	Offset    int
-	MinScore  float64
-	Direction string
-}
-
-func parseImpactQueryFilters(r *http.Request, withDirection bool) (impactQueryFilters, string) {
-	out := impactQueryFilters{Limit: 50, Offset: 0, MinScore: 0}
-	if rawLimit := r.URL.Query().Get("limit"); rawLimit != "" {
-		parsed, err := strconv.Atoi(rawLimit)
-		if err != nil || parsed <= 0 || parsed > 200 {
-			return impactQueryFilters{}, "invalid limit"
-		}
-		out.Limit = parsed
-	}
-	if rawOffset := r.URL.Query().Get("offset"); rawOffset != "" {
-		parsed, err := strconv.Atoi(rawOffset)
-		if err != nil || parsed < 0 {
-			return impactQueryFilters{}, "invalid offset"
-		}
-		out.Offset = parsed
-	}
-	if rawMin := r.URL.Query().Get("min_score"); rawMin != "" {
-		parsed, err := strconv.ParseFloat(rawMin, 64)
-		if err != nil || parsed < 0 || math.IsNaN(parsed) || math.IsInf(parsed, 0) {
-			return impactQueryFilters{}, "invalid min_score"
-		}
-		out.MinScore = parsed
-	}
-	if withDirection {
-		direction := strings.TrimSpace(r.URL.Query().Get("direction"))
-		if direction != "" && direction != string(impactdomain.ImpactDirectionPositive) && direction != string(impactdomain.ImpactDirectionNegative) {
-			return impactQueryFilters{}, "invalid direction"
-		}
-		out.Direction = direction
-	}
-	return out, ""
 }
 
 // findArticleByID fetches upstream articles and returns one matching ID.
