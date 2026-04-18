@@ -10,15 +10,9 @@ import (
 
 // Scheduler runs incremental clustering on a fixed interval using the persisted clustering cursor.
 type Scheduler struct {
-	service            *Service
-	logger             *logging.Logger
-	interval           time.Duration
-	impactRecalculator ImpactRecalculator
-}
-
-// ImpactRecalculator defines optional impact recomputation for event scheduler cycles.
-type ImpactRecalculator interface {
-	RecalculateImpacts(ctx context.Context) error
+	service  *Service
+	logger   *logging.Logger
+	interval time.Duration
 }
 
 // NewScheduler constructs an incremental clustering scheduler.
@@ -29,11 +23,6 @@ func NewScheduler(service *Service, logger *logging.Logger, interval time.Durati
 		return nil
 	}
 	return &Scheduler{service: service, logger: logger, interval: interval}
-}
-
-// SetImpactRecalculator attaches an optional impact recomputation hook for each scheduler cycle.
-func (s *Scheduler) SetImpactRecalculator(recalculator ImpactRecalculator) {
-	s.impactRecalculator = recalculator
 }
 
 // Run starts a ticker loop that clusters new extraction results each interval.
@@ -67,18 +56,5 @@ func (s *Scheduler) runOnce(ctx context.Context) {
 	s.logger.Info(ctx, "app.event_scheduler.cycle_completed", "app/events/scheduler", "event scheduler cycle completed",
 		logging.Field{Key: "considered", Value: result.Considered},
 		logging.Field{Key: "upserted", Value: result.Upserted},
-	)
-	if s.impactRecalculator == nil {
-		return
-	}
-	started := time.Now().UTC()
-	if recalcErr := s.impactRecalculator.RecalculateImpacts(ctx); recalcErr != nil {
-		s.logger.Error(ctx, "app.event_scheduler.impact_cycle_failed", "app/events/scheduler", "event scheduler impact cycle failed", recalcErr,
-			logging.Field{Key: "duration_ms", Value: time.Since(started).Milliseconds()},
-		)
-		return
-	}
-	s.logger.Info(ctx, "app.event_scheduler.impact_cycle_completed", "app/events/scheduler", "event scheduler impact cycle completed",
-		logging.Field{Key: "duration_ms", Value: time.Since(started).Milliseconds()},
 	)
 }
