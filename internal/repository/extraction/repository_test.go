@@ -14,7 +14,7 @@ import (
 	"time"
 
 	"ai-advisor-event-aggregator/internal/extract"
-	_ "github.com/lib/pq"
+	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
 var extractionTestSchemaCounter uint64
@@ -47,7 +47,7 @@ func newPostgresTestDB(t *testing.T) (*sql.DB, func()) {
 	if dsn == "" {
 		t.Skip("TEST_POSTGRES_DSN is required for PostgreSQL-backed repository tests")
 	}
-	db, err := sql.Open("postgres", dsn)
+	db, err := sql.Open("pgx", dsn)
 	if err != nil {
 		t.Fatalf("open postgres: %v", err)
 	}
