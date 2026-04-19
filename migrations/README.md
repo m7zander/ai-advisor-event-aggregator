@@ -41,15 +41,19 @@ Alle historischen SQL-Dateien wurden nach `migrations/legacy_archive/` verschobe
 - Die **einzige** aktive Migrationseintrittsstelle im Service ist:
   - `internal/repository/extraction/repository.go` → `(*Repository).Migrate`
 
-## Rollout-Hinweise für bestehende Alt-DBs
+## Sunset-Entscheidung für Legacy-Rename-Migrationen
 
-Für Alt-DBs gelten folgende klare Rollout-Regeln:
+**Verbindliche Entscheidung:** Die automatische Alt-DB-Rename-Migration für unpräfixierte Tabellen (`article_extractions`, `aggregated_events`, `clustering_state`) und `impact_service_*`-Namen wird im Runtime-Code **nicht mehr unterstützt**.
 
-1. Runtime deployen, damit `Repository.Migrate` die aktiven Tabellen (`event_aggregator_*`) sicherstellt und bestehende `impact_service_*`-Tabellen/Indexnamen idempotent auf die aktiven Namen migriert.
-2. Verifizieren, dass produktive Reads/Writes nur noch auf aktiven Tabellen laufen und keine Legacy-Impact-Tabellen mehr verwenden (insbesondere `event_security_impacts` bzw. `impact_service_event_security_impacts`).
-3. Optionalen Decommission getrennt planen: `legacy_archive/000009_decommission_legacy_impact_tables.sql` **nicht** im Startup ausführen, sondern als separaten, expliziten Ops-Schritt.
-4. Vor jedem physischen Drop Snapshot/Backup erstellen; ein Code-Rollback allein stellt gedroppte Tabellen nicht wieder her.
-5. Für bereits bereinigte DBs ist kein zusätzlicher SQL-Runtime-Schritt nötig, da die Anwendung ausschließlich den Code-Migrationspfad nutzt.
+**Cutover-Version:** `runtime-schema-cutover-2026-04-19`.
+
+Ab dieser Cutover-Version gilt produktiv ausschließlich der kanonische Runtime-Schema-Pfad mit `event_aggregator_*`-Tabellen/Indizes. Der Startup-Pfad führt keine `ALTER TABLE ... RENAME ...` oder `ALTER INDEX ... RENAME ...` Legacy-Schritte mehr aus.
+
+### Operative Konsequenz für Alt-DBs
+
+1. Datenbanken mit Legacy-Tabellennamen müssen **vor** Deployment auf `runtime-schema-cutover-2026-04-19` durch einen expliziten, separat geplanten Ops-Migrationsschritt auf `event_aggregator_*` umgestellt werden.
+2. Die Anwendung erstellt ab Cutover nur noch fehlende kanonische Tabellen/Indizes und führt kanonische Legacy-Fixups (Spaltenergänzungen innerhalb `event_aggregator_*`) idempotent aus.
+3. Historische SQL-Dateien in `migrations/legacy_archive/` bleiben Audit-Historie und sind weiterhin kein Bestandteil des Runtime-Startup-Pfads.
 
 ## Policy: keine doppelte Ownership
 

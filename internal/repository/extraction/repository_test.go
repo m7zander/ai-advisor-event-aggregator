@@ -114,25 +114,27 @@ func TestRepository_Migrate_Idempotent(t *testing.T) {
 	}
 }
 
-// TestRepository_Migrate_RuntimeSchemaDoesNotReferenceLegacyImpactTables verifies runtime migration DDL excludes decommissioned impact tables.
-// It inspects in-process migration SQL constants and fails when legacy impact-table names are present.
-func TestRepository_Migrate_RuntimeSchemaDoesNotReferenceLegacyImpactTables(t *testing.T) {
-	legacyTokens := []string{"event_security_impacts", "impact_service_event_security_impacts"}
-	migrationSQL := []string{extractionLegacyRenameSQL, extractionSchemaSetup}
-
-	for _, sqlText := range migrationSQL {
-		for _, token := range legacyTokens {
-			if strings.Contains(sqlText, token) {
-				t.Fatalf("runtime migration SQL must not reference legacy impact tables: found %q", token)
-			}
+// TestRepository_Migrate_RuntimeSchemaUsesCanonicalEventAggregatorNamesOnly verifies runtime DDL references only canonical event_aggregator objects.
+// It inspects in-process schema setup SQL and fails when legacy unprefixed or impact_service names are present.
+func TestRepository_Migrate_RuntimeSchemaUsesCanonicalEventAggregatorNamesOnly(t *testing.T) {
+	forbiddenSnippets := []string{
+		"impact_service_",
+		"CREATE TABLE IF NOT EXISTS article_extractions",
+		"CREATE TABLE IF NOT EXISTS aggregated_events",
+		"CREATE TABLE IF NOT EXISTS clustering_state",
+		"ALTER TABLE",
+		"ALTER INDEX",
+	}
+	for _, snippet := range forbiddenSnippets {
+		if strings.Contains(extractionSchemaSetup, snippet) {
+			t.Fatalf("runtime schema SQL must not include forbidden legacy snippet %q", snippet)
 		}
 	}
 }
 
-// TestRepository_Migrate_LegacyAggregatedEventsAddsIndustries verifies legacy event_aggregator_aggregated_events schemas are upgraded.
-// It seeds an old table definition without industries and runs migration.
-// It fails if migration does not add the industries column or if repeated migration errors.
-func TestRepository_Migrate_LegacyAggregatedEventsAddsIndustries(t *testing.T) {
+// TestRepository_Migrate_DoesNotRenameLegacyTables verifies runtime migration no longer renames legacy table names.
+// It seeds legacy table names, runs migration, and asserts canonical tables are created while legacy tables remain untouched.
+func TestRepository_Migrate_DoesNotRenameLegacyTables(t *testing.T) {
 	db, cleanup := newPostgresTestDB(t)
 	defer cleanup()
 
@@ -142,263 +144,41 @@ func TestRepository_Migrate_LegacyAggregatedEventsAddsIndustries(t *testing.T) {
 	}
 
 	legacySchema := `
-CREATE TABLE event_aggregator_aggregated_events (
-    event_id TEXT PRIMARY KEY,
-    cluster_key TEXT NOT NULL UNIQUE,
-    event_type TEXT NOT NULL,
-    geo_cluster TEXT NOT NULL,
-    countries TEXT NOT NULL,
-    sectors TEXT NOT NULL,
-    direction TEXT NOT NULL,
-    strength INTEGER NOT NULL,
-    confidence DOUBLE PRECISION NOT NULL,
-    status TEXT NOT NULL DEFAULT 'active',
-    article_ids TEXT NOT NULL,
-    source_count INTEGER NOT NULL,
-    first_seen_at TIMESTAMP NOT NULL,
-    last_seen_at TIMESTAMP NOT NULL,
-    created_at TIMESTAMP NOT NULL,
-    updated_at TIMESTAMP NOT NULL
-);`
-	if _, err := db.ExecContext(context.Background(), legacySchema); err != nil {
-		t.Fatalf("seed legacy schema: %v", err)
-	}
-
-	if err := repo.Migrate(context.Background()); err != nil {
-		t.Fatalf("migrate legacy schema: %v", err)
-	}
-	if err := repo.Migrate(context.Background()); err != nil {
-		t.Fatalf("migrate legacy schema second run: %v", err)
-	}
-
-	if !postgresTableHasColumn(t, db, "event_aggregator_aggregated_events", "industries") {
-		t.Fatal("expected industries column to be present after migration")
-	}
-}
-
-// TestRepository_Migrate_LegacyArticleExtractionsAddsIndustries verifies legacy event_aggregator_article_extractions schemas are upgraded.
-// It seeds an old table definition without extracted_industries and runs migration.
-// It fails if migration does not add extracted_industries or if repeated migration errors.
-func TestRepository_Migrate_LegacyArticleExtractionsAddsIndustries(t *testing.T) {
-	db, cleanup := newPostgresTestDB(t)
-	defer cleanup()
-
-	repo, err := NewRepository(db)
-	if err != nil {
-		t.Fatalf("new repo: %v", err)
-	}
-
-	legacySchema := `
-CREATE TABLE event_aggregator_article_extractions (
-    article_id BIGINT PRIMARY KEY,
-    extraction_status TEXT NOT NULL,
-    extraction_model TEXT NOT NULL,
-    extraction_started_at TIMESTAMP NULL,
-    extraction_finished_at TIMESTAMP NULL,
-    extraction_error TEXT NULL,
-    extracted_event_type TEXT NULL,
-    extracted_geo_cluster TEXT NULL,
-    extracted_countries TEXT NULL,
-    extracted_companies TEXT NULL,
-    extracted_sectors TEXT NULL,
-    extracted_impact_direction TEXT NULL,
-    extracted_impact_strength INTEGER NULL,
-    extracted_channels TEXT NULL,
-    extracted_time_horizon TEXT NULL,
-    extracted_confidence DOUBLE PRECISION NULL,
-    created_at TIMESTAMP NOT NULL,
-    updated_at TIMESTAMP NOT NULL
-);`
-	if _, err := db.ExecContext(context.Background(), legacySchema); err != nil {
-		t.Fatalf("seed legacy event_aggregator_article_extractions schema: %v", err)
-	}
-
-	if err := repo.Migrate(context.Background()); err != nil {
-		t.Fatalf("migrate legacy event_aggregator_article_extractions schema: %v", err)
-	}
-	if err := repo.Migrate(context.Background()); err != nil {
-		t.Fatalf("migrate legacy event_aggregator_article_extractions schema second run: %v", err)
-	}
-
-	if !postgresTableHasColumn(t, db, "event_aggregator_article_extractions", "extracted_industries") {
-		t.Fatal("expected extracted_industries column to be present after migration")
-	}
-}
-
-// TestRepository_Migrate_RenamesLegacyUnprefixedTables verifies one-time table rename upgrade path.
-// It seeds legacy unprefixed extraction/event tables and validates migration renames them into canonical event_aggregator names.
-func TestRepository_Migrate_RenamesLegacyUnprefixedTables(t *testing.T) {
-	db, cleanup := newPostgresTestDB(t)
-	defer cleanup()
-
-	repo, err := NewRepository(db)
-	if err != nil {
-		t.Fatalf("new repo: %v", err)
-	}
-
-	legacySchema := `
-CREATE TABLE article_extractions (
-    article_id BIGINT PRIMARY KEY,
-    extraction_status TEXT NOT NULL,
-    extraction_model TEXT NOT NULL,
-    extraction_started_at TIMESTAMP NULL,
-    extraction_finished_at TIMESTAMP NULL,
-    extraction_error TEXT NULL,
-    extracted_event_type TEXT NULL,
-    extracted_geo_cluster TEXT NULL,
-    extracted_countries TEXT NULL,
-    extracted_companies TEXT NULL,
-    extracted_sectors TEXT NULL,
-    extracted_impact_direction TEXT NULL,
-    extracted_impact_strength INTEGER NULL,
-    extracted_channels TEXT NULL,
-    extracted_time_horizon TEXT NULL,
-    extracted_confidence DOUBLE PRECISION NULL,
-    created_at TIMESTAMP NOT NULL,
-    updated_at TIMESTAMP NOT NULL
-);
-CREATE TABLE aggregated_events (
-    event_id TEXT PRIMARY KEY,
-    cluster_key TEXT NOT NULL UNIQUE,
-    event_type TEXT NOT NULL,
-    geo_cluster TEXT NOT NULL,
-    countries TEXT NOT NULL,
-    sectors TEXT NOT NULL,
-    direction TEXT NOT NULL,
-    strength INTEGER NOT NULL,
-    confidence DOUBLE PRECISION NOT NULL,
-    status TEXT NOT NULL DEFAULT 'active',
-    article_ids TEXT NOT NULL,
-    source_count INTEGER NOT NULL,
-    first_seen_at TIMESTAMP NOT NULL,
-    last_seen_at TIMESTAMP NOT NULL,
-    created_at TIMESTAMP NOT NULL,
-    updated_at TIMESTAMP NOT NULL
-);
-CREATE TABLE clustering_state (
-    state_key TEXT PRIMARY KEY,
-    last_run_at TIMESTAMP NOT NULL,
-    updated_at TIMESTAMP NOT NULL
-);`
+CREATE TABLE article_extractions (article_id BIGINT PRIMARY KEY);
+CREATE TABLE impact_service_article_extractions (article_id BIGINT PRIMARY KEY);
+CREATE TABLE aggregated_events (event_id TEXT PRIMARY KEY);
+CREATE TABLE impact_service_aggregated_events (event_id TEXT PRIMARY KEY);
+CREATE TABLE clustering_state (state_key TEXT PRIMARY KEY);
+CREATE TABLE impact_service_clustering_state (state_key TEXT PRIMARY KEY);`
 	if _, err := db.ExecContext(context.Background(), legacySchema); err != nil {
 		t.Fatalf("seed legacy tables: %v", err)
 	}
 
 	if err := repo.Migrate(context.Background()); err != nil {
-		t.Fatalf("migrate legacy table rename: %v", err)
+		t.Fatalf("migrate without legacy renames: %v", err)
 	}
 
 	if !postgresTableHasColumn(t, db, "event_aggregator_article_extractions", "article_id") {
-		t.Fatal("expected canonical extraction table after migration")
+		t.Fatal("expected canonical event_aggregator_article_extractions table after migration")
 	}
 	if !postgresTableHasColumn(t, db, "event_aggregator_aggregated_events", "event_id") {
-		t.Fatal("expected canonical aggregated events table after migration")
+		t.Fatal("expected canonical event_aggregator_aggregated_events table after migration")
 	}
 	if !postgresTableHasColumn(t, db, "event_aggregator_clustering_state", "state_key") {
-		t.Fatal("expected canonical clustering state table after migration")
-	}
-}
-
-// TestRepository_Migrate_RenamesImpactServiceTablesAndIndexes verifies legacy impact_service names are migrated to canonical event_aggregator names.
-// It seeds old impact_service tables and indexes, runs migration twice for idempotency, and asserts canonical table/index names exist.
-func TestRepository_Migrate_RenamesImpactServiceTablesAndIndexes(t *testing.T) {
-	db, cleanup := newPostgresTestDB(t)
-	defer cleanup()
-
-	repo, err := NewRepository(db)
-	if err != nil {
-		t.Fatalf("new repo: %v", err)
+		t.Fatal("expected canonical event_aggregator_clustering_state table after migration")
 	}
 
-	legacySchema := `
-CREATE TABLE impact_service_article_extractions (
-    article_id BIGINT PRIMARY KEY,
-    extraction_status TEXT NOT NULL,
-    extraction_model TEXT NOT NULL,
-    extraction_started_at TIMESTAMP NULL,
-    extraction_finished_at TIMESTAMP NULL,
-    extraction_error TEXT NULL,
-    extracted_event_type TEXT NULL,
-    extracted_geo_cluster TEXT NULL,
-    extracted_countries TEXT NULL,
-    extracted_companies TEXT NULL,
-    extracted_sectors TEXT NULL,
-    extracted_impact_direction TEXT NULL,
-    extracted_impact_strength INTEGER NULL,
-    extracted_channels TEXT NULL,
-    extracted_time_horizon TEXT NULL,
-    extracted_confidence DOUBLE PRECISION NULL,
-    created_at TIMESTAMP NOT NULL,
-    updated_at TIMESTAMP NOT NULL
-);
-CREATE UNIQUE INDEX idx_impact_service_article_extractions_article_id ON impact_service_article_extractions(article_id);
-CREATE INDEX idx_impact_service_article_extractions_status ON impact_service_article_extractions(extraction_status);
-CREATE TABLE impact_service_aggregated_events (
-    event_id TEXT PRIMARY KEY,
-    cluster_key TEXT NOT NULL UNIQUE,
-    event_type TEXT NOT NULL,
-    geo_cluster TEXT NOT NULL,
-    countries TEXT NOT NULL,
-    sectors TEXT NOT NULL,
-    direction TEXT NOT NULL,
-    strength INTEGER NOT NULL,
-    confidence DOUBLE PRECISION NOT NULL,
-    status TEXT NOT NULL DEFAULT 'active',
-    article_ids TEXT NOT NULL,
-    source_count INTEGER NOT NULL,
-    first_seen_at TIMESTAMP NOT NULL,
-    last_seen_at TIMESTAMP NOT NULL,
-    created_at TIMESTAMP NOT NULL,
-    updated_at TIMESTAMP NOT NULL
-);
-CREATE INDEX idx_impact_service_aggregated_events_last_seen_at ON impact_service_aggregated_events(last_seen_at);
-CREATE INDEX idx_impact_service_aggregated_events_cluster_key ON impact_service_aggregated_events(cluster_key);
-CREATE UNIQUE INDEX idx_impact_service_aggregated_events_cluster_key_unique ON impact_service_aggregated_events(cluster_key);
-CREATE TABLE impact_service_clustering_state (
-    state_key TEXT PRIMARY KEY,
-    last_run_at TIMESTAMP NOT NULL,
-    updated_at TIMESTAMP NOT NULL
-);`
-	if _, err := db.ExecContext(context.Background(), legacySchema); err != nil {
-		t.Fatalf("seed impact_service legacy schema: %v", err)
+	legacyTables := []struct{ table, column string }{
+		{"article_extractions", "article_id"},
+		{"impact_service_article_extractions", "article_id"},
+		{"aggregated_events", "event_id"},
+		{"impact_service_aggregated_events", "event_id"},
+		{"clustering_state", "state_key"},
+		{"impact_service_clustering_state", "state_key"},
 	}
-
-	if err := repo.Migrate(context.Background()); err != nil {
-		t.Fatalf("migrate impact_service legacy schema: %v", err)
-	}
-	if err := repo.Migrate(context.Background()); err != nil {
-		t.Fatalf("migrate impact_service legacy schema second run: %v", err)
-	}
-
-	if !postgresTableHasColumn(t, db, "event_aggregator_article_extractions", "article_id") {
-		t.Fatal("expected renamed event_aggregator article_extractions table after migration")
-	}
-	if !postgresTableHasColumn(t, db, "event_aggregator_aggregated_events", "event_id") {
-		t.Fatal("expected renamed event_aggregator aggregated_events table after migration")
-	}
-	if !postgresTableHasColumn(t, db, "event_aggregator_clustering_state", "state_key") {
-		t.Fatal("expected renamed event_aggregator clustering_state table after migration")
-	}
-	if postgresTableHasColumn(t, db, "impact_service_article_extractions", "article_id") {
-		t.Fatal("did not expect legacy impact_service article_extractions table after migration")
-	}
-	if postgresTableHasColumn(t, db, "impact_service_aggregated_events", "event_id") {
-		t.Fatal("did not expect legacy impact_service aggregated_events table after migration")
-	}
-	if postgresTableHasColumn(t, db, "impact_service_clustering_state", "state_key") {
-		t.Fatal("did not expect legacy impact_service clustering_state table after migration")
-	}
-
-	expectedIndexes := []string{
-		"idx_event_aggregator_article_extractions_article_id",
-		"idx_event_aggregator_article_extractions_status",
-		"idx_event_aggregator_aggregated_events_last_seen_at",
-		"idx_event_aggregator_aggregated_events_cluster_key",
-		"idx_event_aggregator_aggregated_events_cluster_key_unique",
-	}
-	for _, idx := range expectedIndexes {
-		if !postgresIndexExists(t, db, idx) {
-			t.Fatalf("expected renamed index to exist: %s", idx)
+	for _, legacyTable := range legacyTables {
+		if !postgresTableHasColumn(t, db, legacyTable.table, legacyTable.column) {
+			t.Fatalf("expected legacy table to remain untouched because rename support is sunset: %s", legacyTable.table)
 		}
 	}
 }

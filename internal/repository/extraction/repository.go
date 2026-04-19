@@ -67,76 +67,6 @@ CREATE TABLE IF NOT EXISTS event_aggregator_clustering_state (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_event_aggregator_aggregated_events_cluster_key_unique ON event_aggregator_aggregated_events(cluster_key);`
 
-const extractionLegacyRenameSQL = `
-DO $$
-BEGIN
-    IF to_regclass('article_extractions') IS NOT NULL
-       AND to_regclass('event_aggregator_article_extractions') IS NULL THEN
-        ALTER TABLE article_extractions RENAME TO event_aggregator_article_extractions;
-    END IF;
-    IF to_regclass('impact_service_article_extractions') IS NOT NULL
-       AND to_regclass('event_aggregator_article_extractions') IS NULL THEN
-        ALTER TABLE impact_service_article_extractions RENAME TO event_aggregator_article_extractions;
-    END IF;
-    IF to_regclass('aggregated_events') IS NOT NULL
-       AND to_regclass('event_aggregator_aggregated_events') IS NULL THEN
-        ALTER TABLE aggregated_events RENAME TO event_aggregator_aggregated_events;
-    END IF;
-    IF to_regclass('impact_service_aggregated_events') IS NOT NULL
-       AND to_regclass('event_aggregator_aggregated_events') IS NULL THEN
-        ALTER TABLE impact_service_aggregated_events RENAME TO event_aggregator_aggregated_events;
-    END IF;
-    IF to_regclass('clustering_state') IS NOT NULL
-       AND to_regclass('event_aggregator_clustering_state') IS NULL THEN
-        ALTER TABLE clustering_state RENAME TO event_aggregator_clustering_state;
-    END IF;
-    IF to_regclass('impact_service_clustering_state') IS NOT NULL
-       AND to_regclass('event_aggregator_clustering_state') IS NULL THEN
-        ALTER TABLE impact_service_clustering_state RENAME TO event_aggregator_clustering_state;
-    END IF;
-
-    IF to_regclass('idx_article_extractions_article_id') IS NOT NULL
-       AND to_regclass('idx_event_aggregator_article_extractions_article_id') IS NULL THEN
-        ALTER INDEX idx_article_extractions_article_id RENAME TO idx_event_aggregator_article_extractions_article_id;
-    END IF;
-    IF to_regclass('idx_impact_service_article_extractions_article_id') IS NOT NULL
-       AND to_regclass('idx_event_aggregator_article_extractions_article_id') IS NULL THEN
-        ALTER INDEX idx_impact_service_article_extractions_article_id RENAME TO idx_event_aggregator_article_extractions_article_id;
-    END IF;
-    IF to_regclass('idx_article_extractions_status') IS NOT NULL
-       AND to_regclass('idx_event_aggregator_article_extractions_status') IS NULL THEN
-        ALTER INDEX idx_article_extractions_status RENAME TO idx_event_aggregator_article_extractions_status;
-    END IF;
-    IF to_regclass('idx_impact_service_article_extractions_status') IS NOT NULL
-       AND to_regclass('idx_event_aggregator_article_extractions_status') IS NULL THEN
-        ALTER INDEX idx_impact_service_article_extractions_status RENAME TO idx_event_aggregator_article_extractions_status;
-    END IF;
-    IF to_regclass('idx_aggregated_events_last_seen_at') IS NOT NULL
-       AND to_regclass('idx_event_aggregator_aggregated_events_last_seen_at') IS NULL THEN
-        ALTER INDEX idx_aggregated_events_last_seen_at RENAME TO idx_event_aggregator_aggregated_events_last_seen_at;
-    END IF;
-    IF to_regclass('idx_impact_service_aggregated_events_last_seen_at') IS NOT NULL
-       AND to_regclass('idx_event_aggregator_aggregated_events_last_seen_at') IS NULL THEN
-        ALTER INDEX idx_impact_service_aggregated_events_last_seen_at RENAME TO idx_event_aggregator_aggregated_events_last_seen_at;
-    END IF;
-    IF to_regclass('idx_aggregated_events_cluster_key') IS NOT NULL
-       AND to_regclass('idx_event_aggregator_aggregated_events_cluster_key') IS NULL THEN
-        ALTER INDEX idx_aggregated_events_cluster_key RENAME TO idx_event_aggregator_aggregated_events_cluster_key;
-    END IF;
-    IF to_regclass('idx_impact_service_aggregated_events_cluster_key') IS NOT NULL
-       AND to_regclass('idx_event_aggregator_aggregated_events_cluster_key') IS NULL THEN
-        ALTER INDEX idx_impact_service_aggregated_events_cluster_key RENAME TO idx_event_aggregator_aggregated_events_cluster_key;
-    END IF;
-    IF to_regclass('idx_aggregated_events_cluster_key_unique') IS NOT NULL
-       AND to_regclass('idx_event_aggregator_aggregated_events_cluster_key_unique') IS NULL THEN
-        ALTER INDEX idx_aggregated_events_cluster_key_unique RENAME TO idx_event_aggregator_aggregated_events_cluster_key_unique;
-    END IF;
-    IF to_regclass('idx_impact_service_aggregated_events_cluster_key_unique') IS NOT NULL
-       AND to_regclass('idx_event_aggregator_aggregated_events_cluster_key_unique') IS NULL THEN
-        ALTER INDEX idx_impact_service_aggregated_events_cluster_key_unique RENAME TO idx_event_aggregator_aggregated_events_cluster_key_unique;
-    END IF;
-END $$;`
-
 const (
 	// StatusPending marks extraction as started and in progress.
 	StatusPending = "pending"
@@ -208,9 +138,6 @@ func NewRepository(db *sql.DB) (*Repository, error) {
 // The ctx parameter controls statement execution lifecycle.
 // It returns an error when schema creation fails.
 func (r *Repository) Migrate(ctx context.Context) error {
-	if _, err := r.db.ExecContext(ctx, extractionLegacyRenameSQL); err != nil {
-		return fmt.Errorf("rename legacy extraction tables: %w", err)
-	}
 	if _, err := r.db.ExecContext(ctx, extractionSchemaSetup); err != nil {
 		return fmt.Errorf("migrate extraction schema: %w", err)
 	}
