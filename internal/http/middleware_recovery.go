@@ -3,6 +3,7 @@ package httpapi
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -30,6 +31,9 @@ func RecoveryMiddleware(logger *logging.Logger, next http.Handler) http.Handler 
 			recovered := recover()
 			if recovered == nil {
 				return
+			}
+			if isAbortHandlerPanic(recovered) {
+				panic(http.ErrAbortHandler)
 			}
 
 			reaction := "returned safe 500 response"
@@ -59,6 +63,13 @@ func RecoveryMiddleware(logger *logging.Logger, next http.Handler) http.Handler 
 	})
 }
 
+func isAbortHandlerPanic(recovered any) bool {
+	errValue, ok := recovered.(error)
+	if !ok {
+		return false
+	}
+	return errors.Is(errValue, http.ErrAbortHandler)
+}
 func sanitizedRequestInput(r *http.Request) string {
 	if r == nil {
 		return `{}`

@@ -108,6 +108,30 @@ func TestRecoveryMiddleware_PanicAfterWriteAbortsAndLogsContract(t *testing.T) {
 	t.Fatal("expected panic with http.ErrAbortHandler")
 }
 
+func TestRecoveryMiddleware_DownstreamErrAbortHandlerPreservesSentinelSemantics(t *testing.T) {
+	var stderr bytes.Buffer
+	logger := logging.NewWithWriters(&bytes.Buffer{}, &stderr)
+
+	h := RecoveryMiddleware(logger, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		panic(http.ErrAbortHandler)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/abort", nil)
+	req = req.WithContext(withRequestContextIDs(req.Context(), "req-abort", trace.TraceID{9}, trace.SpanID{10}))
+	rw := httptest.NewRecorder()
+
+	defer func() {
+		if recovered := recover(); recovered != http.ErrAbortHandler {
+			t.Fatalf("recovered panic=%v, want %v", recovered, http.ErrAbortHandler)
+		}
+		if strings.TrimSpace(stderr.String()) != "" {
+			t.Fatalf("expected no panic error log for ErrAbortHandler sentinel, got %q", stderr.String())
+		}
+	}()
+
+	h.ServeHTTP(rw, req)
+	t.Fatal("expected panic with http.ErrAbortHandler")
+}
 func TestRecoveryMiddleware_PanicAfterFlushAborts(t *testing.T) {
 	var stderr bytes.Buffer
 	logger := logging.NewWithWriters(&bytes.Buffer{}, &stderr)
