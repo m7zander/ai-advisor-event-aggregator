@@ -221,6 +221,9 @@ go build ./...
 
 - Betrieb hinter Reverse Proxy; TLS wird extern terminiert.
 - HTTP-Server setzt Read/Write/Idle-Timeouts aus ENV.
+- OpenTelemetry exportiert Traces, Metriken und Logs via OTLP/HTTP an `OTEL_EXPORTER_OTLP_ENDPOINT` mit `service.name=OTEL_SERVICE_NAME`.
+- HTTP-Requests emittieren die Metriken `request_count`, `request_duration_ms`, `error_count` und `in_flight_requests`.
+- Strukturierte Logs werden identisch auf stdout/stderr und via OTel-Logpipeline exportiert (inkl. `request_id` und `trace_id`, wenn verfügbar).
 - Startup ist fail-fast bei ungültiger Konfiguration oder nicht erreichbarer DB.
 - DB-Migrationen laufen beim Startup.
 - Event-Clustering-Scheduler läuft periodisch mit `CLUSTER_SCHEDULE_INTERVAL_MINUTES`.
