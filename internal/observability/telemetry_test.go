@@ -101,8 +101,12 @@ func TestHTTPMiddlewareInFlightLifecycle(t *testing.T) {
 
 	close(release)
 	wg.Wait()
-	if got := waitForInFlightRequestsValue(t, ctx, reader, http.MethodGet, "/events", 0); got != 0 {
-		t.Fatalf("in_flight_requests value after request completion = %d, want 0", got)
+	got, ok := waitForInFlightRequestsPoint(t, ctx, reader, http.MethodGet, "/events", 0, true)
+	if !ok || got != 0 {
+		t.Fatalf("expected zero-valued in_flight_requests sample after completion, got value=%d exists=%v", got, ok)
+	}
+	if _, ok := collectInFlightRequestsPoint(t, ctx, reader, http.MethodGet, "/events"); ok {
+		t.Fatal("expected in_flight_requests series to be removed after zero sample emission")
 	}
 }
 
@@ -198,7 +202,31 @@ func waitForInFlightRequestsValue(t *testing.T, ctx context.Context, reader *sdk
 	return collectInFlightRequestsValue(t, ctx, reader, method, route)
 }
 
+func waitForInFlightRequestsPoint(t *testing.T, ctx context.Context, reader *sdkmetric.ManualReader, method string, route string, want int64, wantExists bool) (int64, bool) {
+	t.Helper()
+
+	const attempts = 20
+	for i := 0; i < attempts; i++ {
+		got, ok := collectInFlightRequestsPoint(t, ctx, reader, method, route)
+		if got == want && ok == wantExists {
+			return got, ok
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	return collectInFlightRequestsPoint(t, ctx, reader, method, route)
+}
+
 func collectInFlightRequestsValue(t *testing.T, ctx context.Context, reader *sdkmetric.ManualReader, method string, route string) int64 {
+	t.Helper()
+
+	value, ok := collectInFlightRequestsPoint(t, ctx, reader, method, route)
+	if !ok {
+		return 0
+	}
+	return value
+}
+
+func collectInFlightRequestsPoint(t *testing.T, ctx context.Context, reader *sdkmetric.ManualReader, method string, route string) (int64, bool) {
 	t.Helper()
 
 	var rm metricdata.ResourceMetrics
@@ -220,14 +248,14 @@ func collectInFlightRequestsValue(t *testing.T, ctx context.Context, reader *sdk
 				pointMethod, methodFound := findAttributeValue(point.Attributes, "http.method")
 				pointRoute, routeFound := findAttributeValue(point.Attributes, "http.route")
 				if methodFound && routeFound && pointMethod == method && pointRoute == route {
-					return point.Value
+					return point.Value, true
 				}
 			}
-			return 0
+			return 0, false
 		}
 	}
 
-	return 0
+	return 0, false
 }
 
 func findAttributeValue(set attribute.Set, key string) (string, bool) {

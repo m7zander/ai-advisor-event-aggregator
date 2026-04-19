@@ -38,13 +38,15 @@ type inFlightKey struct {
 }
 
 type inFlightTracker struct {
-	mu     sync.RWMutex
-	counts map[inFlightKey]int64
+	mu              sync.Mutex
+	counts          map[inFlightKey]int64
+	pendingZeroEmit map[inFlightKey]struct{}
 }
 
 func newInFlightTracker() *inFlightTracker {
 	return &inFlightTracker{
-		counts: make(map[inFlightKey]int64),
+		counts:          make(map[inFlightKey]int64),
+		pendingZeroEmit: make(map[inFlightKey]struct{}),
 	}
 }
 
@@ -53,6 +55,7 @@ func (t *inFlightTracker) increment(method string, route string) {
 	defer t.mu.Unlock()
 	key := inFlightKey{method: method, route: route}
 	t.counts[key]++
+	delete(t.pendingZeroEmit, key)
 }
 
 func (t *inFlightTracker) decrement(method string, route string) {
@@ -61,18 +64,25 @@ func (t *inFlightTracker) decrement(method string, route string) {
 	key := inFlightKey{method: method, route: route}
 	current := t.counts[key]
 	if current <= 1 {
-		delete(t.counts, key)
+		t.counts[key] = 0
+		t.pendingZeroEmit[key] = struct{}{}
 		return
 	}
 	t.counts[key] = current - 1
 }
 
 func (t *inFlightTracker) snapshot() map[inFlightKey]int64 {
-	t.mu.RLock()
-	defer t.mu.RUnlock()
+	t.mu.Lock()
+	defer t.mu.Unlock()
 	cloned := make(map[inFlightKey]int64, len(t.counts))
 	for key, value := range t.counts {
 		cloned[key] = value
+		if value == 0 {
+			if _, shouldDrop := t.pendingZeroEmit[key]; shouldDrop {
+				delete(t.counts, key)
+				delete(t.pendingZeroEmit, key)
+			}
+		}
 	}
 	return cloned
 }
