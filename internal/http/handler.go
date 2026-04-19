@@ -98,7 +98,25 @@ func (h *Handler) health(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+	if err := json.NewEncoder(w).Encode(map[string]string{"status": "ok"}); err != nil {
+		h.logger.ErrorWithContract(
+			r.Context(),
+			"http.health.encode_failed",
+			"http/health",
+			"failed to encode health response payload",
+			err,
+			logging.ErrorContract{
+				Failure:        "health_response_encode_failed",
+				Cause:          err.Error(),
+				SanitizedInput: fmt.Sprintf(`{"method":%q,"path":%q}`, r.Method, r.URL.Path),
+				Reaction:       "attempted to return internal server error response",
+			},
+			logging.Field{Key: "method", Value: r.Method},
+			logging.Field{Key: "path", Value: r.URL.Path},
+		)
+		http.Error(w, "failed to encode response", http.StatusInternalServerError)
+		return
+	}
 }
 
 // preprocess handles article preprocess transport by delegating to preprocess package flow.
