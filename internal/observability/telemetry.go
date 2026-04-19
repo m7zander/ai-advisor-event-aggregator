@@ -130,18 +130,20 @@ func (t *Telemetry) HTTPMiddleware(next http.Handler) http.Handler {
 		defer t.inFlightRequests.Add(r.Context(), -1, metric.WithAttributes(attrs...))
 
 		recorder := &statusRecorder{ResponseWriter: w, statusCode: http.StatusOK}
-		next.ServeHTTP(recorder, r)
+		defer func() {
+			statusAttrs := append(attrs, attribute.Int("http.status_code", recorder.statusCode))
+			t.requestCount.Add(r.Context(), 1, metric.WithAttributes(statusAttrs...))
+			t.requestDurationMS.Record(
+				r.Context(),
+				float64(time.Since(start).Milliseconds()),
+				metric.WithAttributes(statusAttrs...),
+			)
+			if recorder.statusCode >= http.StatusBadRequest {
+				t.errorCount.Add(r.Context(), 1, metric.WithAttributes(statusAttrs...))
+			}
+		}()
 
-		statusAttrs := append(attrs, attribute.Int("http.status_code", recorder.statusCode))
-		t.requestCount.Add(r.Context(), 1, metric.WithAttributes(statusAttrs...))
-		t.requestDurationMS.Record(
-			r.Context(),
-			float64(time.Since(start).Milliseconds()),
-			metric.WithAttributes(statusAttrs...),
-		)
-		if recorder.statusCode >= http.StatusBadRequest {
-			t.errorCount.Add(r.Context(), 1, metric.WithAttributes(statusAttrs...))
-		}
+		next.ServeHTTP(recorder, r)
 	})
 }
 

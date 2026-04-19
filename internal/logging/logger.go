@@ -7,6 +7,7 @@ import (
 	"io"
 	stdlog "log"
 	"os"
+	"reflect"
 	"strings"
 	"time"
 
@@ -171,11 +172,73 @@ func anyToValue(v any) otellog.Value {
 		return otellog.Int64Value(value)
 	case int32:
 		return otellog.Int64Value(int64(value))
+	case uint:
+		return otellog.Int64Value(int64(value))
+	case uint64:
+		return otellog.Int64Value(int64(value))
+	case uint32:
+		return otellog.Int64Value(int64(value))
 	case float64:
 		return otellog.Float64Value(value)
 	case float32:
 		return otellog.Float64Value(float64(value))
+	case []string:
+		items := make([]otellog.Value, 0, len(value))
+		for _, item := range value {
+			items = append(items, otellog.StringValue(item))
+		}
+		return otellog.SliceValue(items...)
+	case []int64:
+		items := make([]otellog.Value, 0, len(value))
+		for _, item := range value {
+			items = append(items, otellog.Int64Value(item))
+		}
+		return otellog.SliceValue(items...)
+	case []int:
+		items := make([]otellog.Value, 0, len(value))
+		for _, item := range value {
+			items = append(items, otellog.Int64Value(int64(item)))
+		}
+		return otellog.SliceValue(items...)
+	case []any:
+		items := make([]otellog.Value, 0, len(value))
+		for _, item := range value {
+			items = append(items, anyToValue(item))
+		}
+		return otellog.SliceValue(items...)
+	case map[string]string:
+		kvs := make([]otellog.KeyValue, 0, len(value))
+		for key, item := range value {
+			kvs = append(kvs, otellog.String(key, item))
+		}
+		return otellog.MapValue(kvs...)
+	case map[string]any:
+		kvs := make([]otellog.KeyValue, 0, len(value))
+		for key, item := range value {
+			kvs = append(kvs, otellog.KeyValue{Key: key, Value: anyToValue(item)})
+		}
+		return otellog.MapValue(kvs...)
 	default:
+		reflected := reflect.ValueOf(v)
+		switch reflected.Kind() {
+		case reflect.Slice, reflect.Array:
+			items := make([]otellog.Value, 0, reflected.Len())
+			for i := 0; i < reflected.Len(); i++ {
+				items = append(items, anyToValue(reflected.Index(i).Interface()))
+			}
+			return otellog.SliceValue(items...)
+		case reflect.Map:
+			if reflected.Type().Key().Kind() == reflect.String {
+				kvs := make([]otellog.KeyValue, 0, reflected.Len())
+				for _, key := range reflected.MapKeys() {
+					kvs = append(kvs, otellog.KeyValue{
+						Key:   key.String(),
+						Value: anyToValue(reflected.MapIndex(key).Interface()),
+					})
+				}
+				return otellog.MapValue(kvs...)
+			}
+		}
 		return otellog.StringValue(fmt.Sprintf("%v", value))
 	}
 }
