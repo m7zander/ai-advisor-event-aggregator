@@ -272,6 +272,11 @@ func TestParseOTLPEndpoint(t *testing.T) {
 			endpoint: "http://collector.internal:4318?debug=true",
 			wantErr:  "query string",
 		},
+		{
+			name:     "userinfo not allowed",
+			endpoint: "https://user:pass@collector.internal:4318",
+			wantErr:  "userinfo",
+		},
 	}
 
 	for _, tt := range tests {

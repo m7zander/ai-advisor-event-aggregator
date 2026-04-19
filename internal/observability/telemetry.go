@@ -184,6 +184,9 @@ func parseOTLPEndpoint(endpoint string) (string, bool, error) {
 	if parsedURL.Host == "" {
 		return "", false, errors.New("missing host in URL")
 	}
+	if parsedURL.User != nil {
+		return "", false, errors.New("userinfo in OTLP endpoint is not allowed; configure authentication via supported headers/environment instead")
+	}
 	if parsedURL.Path != "" && parsedURL.Path != "/" {
 		return "", false, fmt.Errorf("path %q is not allowed; use base OTLP endpoint without signal path", parsedURL.Path)
 	}
