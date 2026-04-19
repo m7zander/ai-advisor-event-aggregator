@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-// TestRegister_CurrentRoutesRemainWhileRemovedLegacyRoutesReturn404 verifies the active transport surface excludes removed legacy routes.
+// TestRegister_CurrentRoutesRemainWhileRemovedLegacyRoutesReturn404 verifies the active transport surface excludes deprecated routes.
 func TestRegister_CurrentRoutesRemainWhileRemovedLegacyRoutesReturn404(t *testing.T) {
 	h := NewHandlerWithExtractionAndClustering(nil, nil, nil, "", nil)
 	mux := http.NewServeMux()
@@ -25,12 +25,12 @@ func TestRegister_CurrentRoutesRemainWhileRemovedLegacyRoutesReturn404(t *testin
 		{name: "extract run batch route registered", method: http.MethodGet, path: "/api/extract/run-batch", code: http.StatusMethodNotAllowed},
 		{name: "extract result route registered", method: http.MethodPost, path: "/api/extract/result", code: http.StatusMethodNotAllowed},
 		{name: "events route registered", method: http.MethodGet, path: "/api/events", code: http.StatusInternalServerError},
-		{name: "removed legacy event securities route", method: http.MethodGet, path: "/api/events/e1/securities", code: http.StatusNotFound},
-		{name: "removed legacy security impacts route", method: http.MethodGet, path: "/api/securities/ABC/impacts", code: http.StatusNotFound},
-		{name: "legacy rebuild route removed", method: http.MethodPost, path: "/api/universe/rebuild", code: http.StatusNotFound},
-		{name: "legacy active route removed", method: http.MethodGet, path: "/api/universe", code: http.StatusNotFound},
-		{name: "legacy securities route removed", method: http.MethodGet, path: "/api/universe/securities", code: http.StatusNotFound},
-		{name: "legacy memberships route removed", method: http.MethodGet, path: "/api/universe/memberships", code: http.StatusNotFound},
+		{name: "deprecated event securities route is not registered", method: http.MethodGet, path: "/api/events/e1/securities", code: http.StatusNotFound},
+		{name: "deprecated security impacts route is not registered", method: http.MethodGet, path: "/api/securities/ABC/impacts", code: http.StatusNotFound},
+		{name: "deprecated rebuild route is not registered", method: http.MethodPost, path: "/api/universe/rebuild", code: http.StatusNotFound},
+		{name: "deprecated universe route is not registered", method: http.MethodGet, path: "/api/universe", code: http.StatusNotFound},
+		{name: "deprecated universe securities route is not registered", method: http.MethodGet, path: "/api/universe/securities", code: http.StatusNotFound},
+		{name: "deprecated universe memberships route is not registered", method: http.MethodGet, path: "/api/universe/memberships", code: http.StatusNotFound},
 	}
 
 	for _, tc := range tests {
