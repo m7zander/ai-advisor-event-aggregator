@@ -36,9 +36,10 @@ func RecoveryMiddleware(logger *logging.Logger, next http.Handler) http.Handler 
 			if trackedWriter.ResponseStarted() {
 				reaction = "aborted request because response already started"
 			}
-			logger.ErrorWithContract(r.Context(), "http.panic.recovered", "http/recovery", "recovered panic while handling HTTP request", fmt.Errorf("%s", safePanicValue(recovered)), logging.ErrorContract{
+			cause := safePanicValue(recovered)
+			logger.ErrorWithContract(r.Context(), "http.panic.recovered", "http/recovery", "recovered panic while handling HTTP request", fmt.Errorf("%s", cause), logging.ErrorContract{
 				Failure:        "handler_panic",
-				Cause:          safePanicValue(recovered),
+				Cause:          cause,
 				SanitizedInput: sanitizedRequestInput(r),
 				Reaction:       reaction,
 			},
@@ -89,6 +90,7 @@ type recoveryResponseWriter struct {
 	http.ResponseWriter
 	wroteHeader bool
 	wroteBody   bool
+	hijacked    bool
 }
 
 func newRecoveryResponseWriter(w http.ResponseWriter) *recoveryResponseWriter {
@@ -96,7 +98,7 @@ func newRecoveryResponseWriter(w http.ResponseWriter) *recoveryResponseWriter {
 }
 
 func (w *recoveryResponseWriter) ResponseStarted() bool {
-	return w.wroteHeader || w.wroteBody
+	return w.wroteHeader || w.wroteBody || w.hijacked
 }
 
 func (w *recoveryResponseWriter) WriteHeader(statusCode int) {
@@ -117,6 +119,7 @@ func (w *recoveryResponseWriter) Flush() {
 	if !ok {
 		return
 	}
+	w.wroteHeader = true
 	flusher.Flush()
 }
 
@@ -125,7 +128,12 @@ func (w *recoveryResponseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 	if !ok {
 		return nil, nil, fmt.Errorf("response writer does not implement http.Hijacker")
 	}
-	return hijacker.Hijack()
+	conn, rw, err := hijacker.Hijack()
+	if err == nil {
+		w.hijacked = true
+		w.wroteHeader = true
+	}
+	return conn, rw, err
 }
 
 func (w *recoveryResponseWriter) Push(target string, opts *http.PushOptions) error {
@@ -139,6 +147,10 @@ func (w *recoveryResponseWriter) Push(target string, opts *http.PushOptions) err
 func (w *recoveryResponseWriter) ReadFrom(src io.Reader) (int64, error) {
 	readerFrom, ok := w.ResponseWriter.(io.ReaderFrom)
 	if !ok {
+		if !w.wroteHeader {
+			w.wroteHeader = true
+		}
+		w.wroteBody = true
 		return io.Copy(w.ResponseWriter, src)
 	}
 	if !w.wroteHeader {

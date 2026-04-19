@@ -1,13 +1,17 @@
 package httpapi
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"ai-advisor-event-aggregator/internal/logging"
 	"go.opentelemetry.io/otel/trace"
@@ -104,6 +108,77 @@ func TestRecoveryMiddleware_PanicAfterWriteAbortsAndLogsContract(t *testing.T) {
 	t.Fatal("expected panic with http.ErrAbortHandler")
 }
 
+func TestRecoveryMiddleware_PanicAfterFlushAborts(t *testing.T) {
+	var stderr bytes.Buffer
+	logger := logging.NewWithWriters(&bytes.Buffer{}, &stderr)
+
+	writer := &flushRecorder{ResponseRecorder: httptest.NewRecorder()}
+	h := RecoveryMiddleware(logger, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			t.Fatal("wrapped writer must support http.Flusher")
+		}
+		flusher.Flush()
+		panic("boom after flush")
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/stream", nil)
+	req = req.WithContext(withRequestContextIDs(req.Context(), "req-flush", trace.TraceID{5}, trace.SpanID{6}))
+
+	defer func() {
+		if recovered := recover(); recovered != http.ErrAbortHandler {
+			t.Fatalf("recovered panic=%v, want %v", recovered, http.ErrAbortHandler)
+		}
+		if !writer.flushed {
+			t.Fatal("expected flush to be called")
+		}
+		entry := parseSingleJSONLogLine(t, stderr.String())
+		if entry["reaction"] != "aborted request because response already started" {
+			t.Fatalf("reaction=%v, want abort reaction", entry["reaction"])
+		}
+	}()
+
+	h.ServeHTTP(writer, req)
+	t.Fatal("expected panic with http.ErrAbortHandler")
+}
+
+func TestRecoveryMiddleware_PanicAfterHijackAborts(t *testing.T) {
+	var stderr bytes.Buffer
+	logger := logging.NewWithWriters(&bytes.Buffer{}, &stderr)
+
+	writer := newHijackRecorder()
+	defer writer.Close()
+	h := RecoveryMiddleware(logger, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hijacker, ok := w.(http.Hijacker)
+		if !ok {
+			t.Fatal("wrapped writer must support http.Hijacker")
+		}
+		if _, _, err := hijacker.Hijack(); err != nil {
+			t.Fatalf("hijack failed: %v", err)
+		}
+		panic("boom after hijack")
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/hijack", nil)
+	req = req.WithContext(withRequestContextIDs(req.Context(), "req-hijack", trace.TraceID{7}, trace.SpanID{8}))
+
+	defer func() {
+		if recovered := recover(); recovered != http.ErrAbortHandler {
+			t.Fatalf("recovered panic=%v, want %v", recovered, http.ErrAbortHandler)
+		}
+		if !writer.hijacked {
+			t.Fatal("expected writer to record hijack")
+		}
+		entry := parseSingleJSONLogLine(t, stderr.String())
+		if entry["reaction"] != "aborted request because response already started" {
+			t.Fatalf("reaction=%v, want abort reaction", entry["reaction"])
+		}
+	}()
+
+	h.ServeHTTP(writer, req)
+	t.Fatal("expected panic with http.ErrAbortHandler")
+}
+
 func withRequestContextIDs(ctx context.Context, requestID string, traceID trace.TraceID, spanID trace.SpanID) context.Context {
 	ctx = logging.WithRequestID(ctx, requestID)
 	spanCtx := trace.NewSpanContext(trace.SpanContextConfig{
@@ -125,4 +200,47 @@ func parseSingleJSONLogLine(t *testing.T, logs string) map[string]any {
 		t.Fatalf("failed to decode log line: %v", err)
 	}
 	return entry
+}
+
+type flushRecorder struct {
+	*httptest.ResponseRecorder
+	flushed bool
+}
+
+func (f *flushRecorder) Flush() {
+	f.flushed = true
+}
+
+type hijackRecorder struct {
+	header   http.Header
+	hijacked bool
+	conn     net.Conn
+}
+
+func newHijackRecorder() *hijackRecorder {
+	serverConn, clientConn := net.Pipe()
+	_ = clientConn.SetDeadline(time.Now().Add(30 * time.Second))
+	return &hijackRecorder{
+		header: make(http.Header),
+		conn:   serverConn,
+	}
+}
+
+func (h *hijackRecorder) Header() http.Header { return h.header }
+func (h *hijackRecorder) Write([]byte) (int, error) {
+	return 0, errors.New("write not supported after hijack")
+}
+func (h *hijackRecorder) WriteHeader(int) {}
+func (h *hijackRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	h.hijacked = true
+	return h.conn, bufio.NewReadWriter(bufio.NewReader(h.conn), bufio.NewWriter(h.conn)), nil
+}
+
+func (h *hijackRecorder) Close() error {
+	if h.conn == nil {
+		return nil
+	}
+	err := h.conn.Close()
+	h.conn = nil
+	return err
 }
