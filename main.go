@@ -235,7 +235,7 @@ func main() {
 		// Handlers must treat all body/query/header values as untrusted input even behind the proxy.
 		Handler: httpapi.RequestIDMiddleware(httpapi.ForwardedHeaderMiddleware(
 			otelhttp.NewHandler(
-				mux,
+				httpapi.RecoveryMiddleware(logger, mux),
 				"http.server",
 				otelhttp.WithSpanNameFormatter(func(_ string, r *http.Request) string {
 					_, pattern := mux.Handler(r)
