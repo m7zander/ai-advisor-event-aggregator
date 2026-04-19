@@ -22,7 +22,7 @@ import (
 	"ai-advisor-event-aggregator/internal/upstream"
 
 	repopkg "ai-advisor-event-aggregator/internal/repository/extraction"
-	_ "github.com/lib/pq"
+	_ "github.com/jackc/pgx/v5/stdlib"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
@@ -146,7 +146,7 @@ func main() {
 		clusterScheduleMinutes = parsed
 	}
 
-	db, err := sql.Open("postgres", dbDSN)
+	db, err := sql.Open("pgx", dbDSN)
 	if err != nil {
 		fatalf(logger, "failed to open extraction DB: %v", err)
 	}
@@ -317,7 +317,7 @@ func fatalf(logger *logging.Logger, format string, args ...any) {
 	os.Exit(1)
 }
 
-// validatePostgresDSN verifies that dsn follows PostgreSQL DSN formats supported by lib/pq.
+// validatePostgresDSN verifies that dsn follows PostgreSQL DSN formats supported by pgx stdlib.
 // The dsn parameter is the DATABASE_URL value from environment variables.
 // It returns nil for valid PostgreSQL connection strings and an error for invalid or unsupported DSNs.
 // It fails for empty/whitespace-only input to enforce fail-fast startup behavior.
