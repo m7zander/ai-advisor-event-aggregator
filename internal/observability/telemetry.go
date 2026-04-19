@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"sync"
 	"time"
 
 	"go.opentelemetry.io/otel"
@@ -26,8 +27,64 @@ type Telemetry struct {
 	requestCount      metric.Int64Counter
 	requestDurationMS metric.Float64Histogram
 	errorCount        metric.Int64Counter
-	inFlightRequests  metric.Int64UpDownCounter
+	inFlightRequests  metric.Int64ObservableGauge
+	inFlightCurrent   *inFlightTracker
 	shutdownFns       []func(context.Context) error
+}
+
+type inFlightKey struct {
+	method string
+	route  string
+}
+
+type inFlightTracker struct {
+	mu              sync.Mutex
+	counts          map[inFlightKey]int64
+	pendingZeroEmit map[inFlightKey]struct{}
+}
+
+func newInFlightTracker() *inFlightTracker {
+	return &inFlightTracker{
+		counts:          make(map[inFlightKey]int64),
+		pendingZeroEmit: make(map[inFlightKey]struct{}),
+	}
+}
+
+func (t *inFlightTracker) increment(method string, route string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	key := inFlightKey{method: method, route: route}
+	t.counts[key]++
+	delete(t.pendingZeroEmit, key)
+}
+
+func (t *inFlightTracker) decrement(method string, route string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	key := inFlightKey{method: method, route: route}
+	current := t.counts[key]
+	if current <= 1 {
+		t.counts[key] = 0
+		t.pendingZeroEmit[key] = struct{}{}
+		return
+	}
+	t.counts[key] = current - 1
+}
+
+func (t *inFlightTracker) snapshot() map[inFlightKey]int64 {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	cloned := make(map[inFlightKey]int64, len(t.counts))
+	for key, value := range t.counts {
+		cloned[key] = value
+		if value == 0 {
+			if _, shouldDrop := t.pendingZeroEmit[key]; shouldDrop {
+				delete(t.counts, key)
+				delete(t.pendingZeroEmit, key)
+			}
+		}
+	}
+	return cloned
 }
 
 func InitTelemetry(ctx context.Context, endpoint string, serviceName string) (*Telemetry, error) {
@@ -69,21 +126,10 @@ func InitTelemetry(ctx context.Context, endpoint string, serviceName string) (*T
 	))
 
 	meter := otel.Meter("ai-advisor-event-aggregator/http")
-	requestCount, err := meter.Int64Counter("request_count")
+	inFlightCurrent := newInFlightTracker()
+	requestCount, requestDurationMS, errorCount, inFlightRequests, inFlightRegistration, err := initHTTPMetrics(meter, inFlightCurrent)
 	if err != nil {
-		return nil, fmt.Errorf("create request_count metric: %w", err)
-	}
-	requestDurationMS, err := meter.Float64Histogram("request_duration_ms", metric.WithUnit("ms"))
-	if err != nil {
-		return nil, fmt.Errorf("create request_duration_ms metric: %w", err)
-	}
-	errorCount, err := meter.Int64Counter("error_count")
-	if err != nil {
-		return nil, fmt.Errorf("create error_count metric: %w", err)
-	}
-	inFlightRequests, err := meter.Int64UpDownCounter("in_flight_requests")
-	if err != nil {
-		return nil, fmt.Errorf("create in_flight_requests metric: %w", err)
+		return nil, err
 	}
 
 	return &Telemetry{
@@ -91,12 +137,64 @@ func InitTelemetry(ctx context.Context, endpoint string, serviceName string) (*T
 		requestDurationMS: requestDurationMS,
 		errorCount:        errorCount,
 		inFlightRequests:  inFlightRequests,
+		inFlightCurrent:   inFlightCurrent,
 		shutdownFns: []func(context.Context) error{
 			logProvider.Shutdown,
 			metricProvider.Shutdown,
+			func(context.Context) error {
+				return inFlightRegistration.Unregister()
+			},
 			traceProvider.Shutdown,
 		},
 	}, nil
+}
+
+func initHTTPMetrics(meter metric.Meter, inFlightCurrent *inFlightTracker) (
+	metric.Int64Counter,
+	metric.Float64Histogram,
+	metric.Int64Counter,
+	metric.Int64ObservableGauge,
+	metric.Registration,
+	error,
+) {
+	requestCount, err := meter.Int64Counter("request_count")
+	if err != nil {
+		return nil, nil, nil, nil, nil, fmt.Errorf("create request_count metric: %w", err)
+	}
+	requestDurationMS, err := meter.Float64Histogram("request_duration_ms", metric.WithUnit("ms"))
+	if err != nil {
+		return nil, nil, nil, nil, nil, fmt.Errorf("create request_duration_ms metric: %w", err)
+	}
+	errorCount, err := meter.Int64Counter("error_count")
+	if err != nil {
+		return nil, nil, nil, nil, nil, fmt.Errorf("create error_count metric: %w", err)
+	}
+	inFlightRequests, err := meter.Int64ObservableGauge("in_flight_requests")
+	if err != nil {
+		return nil, nil, nil, nil, nil, fmt.Errorf("create in_flight_requests metric: %w", err)
+	}
+
+	inFlightRegistration, err := meter.RegisterCallback(
+		func(ctx context.Context, observer metric.Observer) error {
+			for key, count := range inFlightCurrent.snapshot() {
+				observer.ObserveInt64(
+					inFlightRequests,
+					count,
+					metric.WithAttributes(
+						attribute.String("http.method", key.method),
+						attribute.String("http.route", key.route),
+					),
+				)
+			}
+			return nil
+		},
+		inFlightRequests,
+	)
+	if err != nil {
+		return nil, nil, nil, nil, nil, fmt.Errorf("register in_flight_requests callback: %w", err)
+	}
+
+	return requestCount, requestDurationMS, errorCount, inFlightRequests, inFlightRegistration, nil
 }
 
 func (t *Telemetry) Shutdown(ctx context.Context) error {
@@ -126,8 +224,10 @@ func (t *Telemetry) HTTPMiddleware(next http.Handler) http.Handler {
 			attribute.String("http.route", route),
 		}
 		start := time.Now()
-		t.inFlightRequests.Add(r.Context(), 1, metric.WithAttributes(attrs...))
-		defer t.inFlightRequests.Add(r.Context(), -1, metric.WithAttributes(attrs...))
+		if t.inFlightCurrent != nil {
+			t.inFlightCurrent.increment(r.Method, route)
+			defer t.inFlightCurrent.decrement(r.Method, route)
+		}
 
 		recorder := &statusRecorder{ResponseWriter: w, statusCode: http.StatusOK}
 		defer func() {
