@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-// TestRemovedLegacyRoutes_EventAndSecurityEndpointsReturn404 ensures removed legacy routes are not registered anymore.
+// TestRemovedLegacyRoutes_EventAndSecurityEndpointsReturn404 ensures deprecated routes are not registered anymore.
 func TestRemovedLegacyRoutes_EventAndSecurityEndpointsReturn404(t *testing.T) {
 	h := NewHandlerWithExtractionAndClustering(nil, nil, nil, "", &fakeClusterService{})
 	mux := http.NewServeMux()
@@ -17,10 +17,10 @@ func TestRemovedLegacyRoutes_EventAndSecurityEndpointsReturn404(t *testing.T) {
 		method string
 		path   string
 	}{
-		{name: "removed legacy event securities endpoint", method: http.MethodGet, path: "/api/events/evt-1/securities"},
-		{name: "removed legacy security impacts endpoint", method: http.MethodGet, path: "/api/securities/AAA/impacts"},
-		{name: "removed legacy event subroute for other methods", method: http.MethodPost, path: "/api/events/evt-1/securities"},
-		{name: "removed legacy security subroute for other methods", method: http.MethodDelete, path: "/api/securities/AAA/impacts"},
+		{name: "deprecated event securities endpoint", method: http.MethodGet, path: "/api/events/evt-1/securities"},
+		{name: "deprecated security impacts endpoint", method: http.MethodGet, path: "/api/securities/AAA/impacts"},
+		{name: "deprecated event subroute for other methods", method: http.MethodPost, path: "/api/events/evt-1/securities"},
+		{name: "deprecated security subroute for other methods", method: http.MethodDelete, path: "/api/securities/AAA/impacts"},
 	}
 
 	for _, tc := range tests {
