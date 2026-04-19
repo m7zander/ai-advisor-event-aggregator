@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -226,6 +227,79 @@ func TestTelemetryShutdownRunsFunctionsInDeclaredOrder(t *testing.T) {
 		if order[i] != want[i] {
 			t.Fatalf("shutdown order[%d] = %q, want %q", i, order[i], want[i])
 		}
+	}
+}
+
+func TestParseOTLPEndpoint(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		endpoint     string
+		wantHost     string
+		wantInsecure bool
+		wantErr      string
+	}{
+		{
+			name:         "http endpoint",
+			endpoint:     "http://collector.internal:4318",
+			wantHost:     "collector.internal:4318",
+			wantInsecure: true,
+		},
+		{
+			name:         "https endpoint",
+			endpoint:     "https://collector.example.com:4318",
+			wantHost:     "collector.example.com:4318",
+			wantInsecure: false,
+		},
+		{
+			name:     "invalid scheme",
+			endpoint: "grpc://collector.internal:4318",
+			wantErr:  "unsupported URL scheme",
+		},
+		{
+			name:     "missing host",
+			endpoint: "http://",
+			wantErr:  "missing host",
+		},
+		{
+			name:     "path not allowed",
+			endpoint: "http://collector.internal:4318/v1/logs",
+			wantErr:  "path",
+		},
+		{
+			name:     "query not allowed",
+			endpoint: "http://collector.internal:4318?debug=true",
+			wantErr:  "query string",
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			gotHost, gotInsecure, err := parseOTLPEndpoint(tt.endpoint)
+			if tt.wantErr != "" {
+				if err == nil {
+					t.Fatalf("parseOTLPEndpoint() error = nil, want substring %q", tt.wantErr)
+				}
+				if !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("parseOTLPEndpoint() error = %q, want substring %q", err.Error(), tt.wantErr)
+				}
+				return
+			}
+
+			if err != nil {
+				t.Fatalf("parseOTLPEndpoint() unexpected error = %v", err)
+			}
+			if gotHost != tt.wantHost {
+				t.Fatalf("parseOTLPEndpoint() host = %q, want %q", gotHost, tt.wantHost)
+			}
+			if gotInsecure != tt.wantInsecure {
+				t.Fatalf("parseOTLPEndpoint() insecure = %t, want %t", gotInsecure, tt.wantInsecure)
+			}
+		})
 	}
 }
 
