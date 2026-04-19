@@ -6,8 +6,8 @@ import (
 	"testing"
 )
 
-// TestRegister_RegistersOnlyCurrentAPIRoutes verifies the active transport surface excludes removed legacy routes.
-func TestRegister_RegistersOnlyCurrentAPIRoutes(t *testing.T) {
+// TestRegister_CurrentRoutesRemainWhileRemovedLegacyRoutesReturn404 verifies the active transport surface excludes removed legacy routes.
+func TestRegister_CurrentRoutesRemainWhileRemovedLegacyRoutesReturn404(t *testing.T) {
 	h := NewHandlerWithExtractionAndClustering(nil, nil, nil, "", nil)
 	mux := http.NewServeMux()
 	h.Register(mux)
@@ -25,8 +25,8 @@ func TestRegister_RegistersOnlyCurrentAPIRoutes(t *testing.T) {
 		{name: "extract run batch route registered", method: http.MethodGet, path: "/api/extract/run-batch", code: http.StatusMethodNotAllowed},
 		{name: "extract result route registered", method: http.MethodPost, path: "/api/extract/result", code: http.StatusMethodNotAllowed},
 		{name: "events route registered", method: http.MethodGet, path: "/api/events", code: http.StatusInternalServerError},
-		{name: "event securities route removed", method: http.MethodGet, path: "/api/events/e1/securities", code: http.StatusNotFound},
-		{name: "security impacts route removed", method: http.MethodGet, path: "/api/securities/ABC/impacts", code: http.StatusNotFound},
+		{name: "removed legacy event securities route", method: http.MethodGet, path: "/api/events/e1/securities", code: http.StatusNotFound},
+		{name: "removed legacy security impacts route", method: http.MethodGet, path: "/api/securities/ABC/impacts", code: http.StatusNotFound},
 		{name: "legacy rebuild route removed", method: http.MethodPost, path: "/api/universe/rebuild", code: http.StatusNotFound},
 		{name: "legacy active route removed", method: http.MethodGet, path: "/api/universe", code: http.StatusNotFound},
 		{name: "legacy securities route removed", method: http.MethodGet, path: "/api/universe/securities", code: http.StatusNotFound},
