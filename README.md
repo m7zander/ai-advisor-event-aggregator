@@ -133,11 +133,6 @@ Nicht im Scope:
 - Aktiv sind ausschließlich die in diesem README dokumentierten Endpunkte (`/health`, `/api/health`, `/api/preprocess`, `/api/extract/run`, `/api/extract/run-batch`, `/api/extract/result`, `/api/events`).
 - Die Datenbankschema-Migration läuft ausschließlich über `internal/repository/extraction/repository.go` in `(*Repository).Migrate`.
 
-### Historische Referenz
-
-- Ehemalige Legacy-Endpunkte (z. B. `/api/events/{id}/securities`, `/api/securities/{symbol}/impacts`, `/api/universe*`) sind entfernt und nicht Teil der aktuellen öffentlichen API.
-- Historische SQL-Migrationen liegen ausschließlich als Compliance-Referenz im externen Archiv `compliance://event-aggregator/sql-legacy-archive/runtime-schema-cutover-2026-04-19/` und werden zur Laufzeit nicht ausgeführt.
-
 ## Validierung & Fehlerverhalten
 
 - Strikte JSON-Validierung (`DisallowUnknownFields`, keine trailing tokens).
