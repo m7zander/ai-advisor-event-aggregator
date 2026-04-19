@@ -276,26 +276,6 @@ func postgresTableHasColumn(t *testing.T, db *sql.DB, table string, column strin
 	return exists == 1
 }
 
-// postgresIndexExists checks if a PostgreSQL index exists in the current schema.
-// The t parameter controls test failure behavior, db is the PostgreSQL connection, and indexName is the index to inspect.
-// It returns true when the index exists in the current schema.
-func postgresIndexExists(t *testing.T, db *sql.DB, indexName string) bool {
-	t.Helper()
-	var exists int
-	err := db.QueryRowContext(
-		context.Background(),
-		`SELECT 1 FROM pg_indexes WHERE schemaname = current_schema() AND indexname = $1`,
-		indexName,
-	).Scan(&exists)
-	if errors.Is(err, sql.ErrNoRows) {
-		return false
-	}
-	if err != nil {
-		t.Fatalf("index check %s: %v", indexName, err)
-	}
-	return exists == 1
-}
-
 // TestRepository_UpsertPending verifies pending state upsert persistence.
 // It upserts pending state and reads it back by article ID.
 // It fails if status/model/timestamp are not stored.
