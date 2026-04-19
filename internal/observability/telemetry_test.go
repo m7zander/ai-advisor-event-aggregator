@@ -2,6 +2,7 @@ package observability
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -185,6 +186,46 @@ func TestHTTPMiddlewareInFlightLifecyclePerRouteAndMethod(t *testing.T) {
 	}
 	if got := waitForInFlightRequestsValue(t, ctx, reader, http.MethodPost, "/health", 0); got != 0 {
 		t.Fatalf("in_flight_requests POST /health after completion = %d, want 0", got)
+	}
+}
+
+func TestTelemetryShutdownRunsFunctionsInDeclaredOrder(t *testing.T) {
+	t.Parallel()
+
+	var order []string
+	telemetry := &Telemetry{
+		shutdownFns: []func(context.Context) error{
+			func(context.Context) error {
+				order = append(order, "logs")
+				return nil
+			},
+			func(context.Context) error {
+				order = append(order, "metrics")
+				return nil
+			},
+			func(context.Context) error {
+				order = append(order, "unregister")
+				return nil
+			},
+			func(context.Context) error {
+				order = append(order, "traces")
+				return errors.New("trace shutdown failure")
+			},
+		},
+	}
+
+	if err := telemetry.Shutdown(context.Background()); err == nil {
+		t.Fatal("Shutdown() error = nil, want joined error")
+	}
+
+	want := []string{"logs", "metrics", "unregister", "traces"}
+	if len(order) != len(want) {
+		t.Fatalf("shutdown order length = %d, want %d", len(order), len(want))
+	}
+	for i := range want {
+		if order[i] != want[i] {
+			t.Fatalf("shutdown order[%d] = %q, want %q", i, order[i], want[i])
+		}
 	}
 }
 

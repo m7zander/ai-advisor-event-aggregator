@@ -139,11 +139,11 @@ func InitTelemetry(ctx context.Context, endpoint string, serviceName string) (*T
 		inFlightRequests:  inFlightRequests,
 		inFlightCurrent:   inFlightCurrent,
 		shutdownFns: []func(context.Context) error{
+			logProvider.Shutdown,
+			metricProvider.Shutdown,
 			func(context.Context) error {
 				return inFlightRegistration.Unregister()
 			},
-			logProvider.Shutdown,
-			metricProvider.Shutdown,
 			traceProvider.Shutdown,
 		},
 	}, nil
