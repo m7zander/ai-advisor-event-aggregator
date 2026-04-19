@@ -3,6 +3,7 @@ package events
 
 import (
 	"context"
+	"encoding/json"
 	"time"
 
 	"ai-advisor-event-aggregator/internal/logging"
@@ -50,7 +51,16 @@ func (s *Scheduler) runOnce(ctx context.Context) {
 	now := time.Now().UTC()
 	result, err := s.service.ClusterFromStoredCursor(ctx, now)
 	if err != nil {
-		s.logger.Error(ctx, "app.event_scheduler.cycle_failed", "app/events/scheduler", "event scheduler cycle failed", err)
+		sanitizedInput, marshalErr := json.Marshal(map[string]any{"cycle_started_at": now.Format(time.RFC3339Nano)})
+		if marshalErr != nil {
+			sanitizedInput = []byte(`{"error":"sanitize_failed"}`)
+		}
+		s.logger.ErrorWithContract(ctx, "app.event_scheduler.cycle_failed", "app/events/scheduler", "event scheduler cycle failed", err, logging.ErrorContract{
+			Failure:        "event_scheduler_cycle_failed",
+			Cause:          err.Error(),
+			SanitizedInput: string(sanitizedInput),
+			Reaction:       "cycle aborted; retry on next tick",
+		})
 		return
 	}
 	s.logger.Info(ctx, "app.event_scheduler.cycle_completed", "app/events/scheduler", "event scheduler cycle completed",

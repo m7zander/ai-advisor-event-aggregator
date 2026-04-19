@@ -347,6 +347,15 @@ func TestLogBatchErrorSummary(t *testing.T) {
 	if !strings.Contains(output, `"event":"app.scheduler.dispatch_batch_failed_item"`) || !strings.Contains(output, `"article_id":3`) {
 		t.Fatalf("expected failed-item debug line in output, got: %s", output)
 	}
+	if !strings.Contains(output, `"failure":"scheduler_dispatch_item_failed"`) {
+		t.Fatalf("expected failure contract in output, got: %s", output)
+	}
+	if !strings.Contains(output, `"reaction":"item marked failed; batch continues"`) {
+		t.Fatalf("expected reaction contract in output, got: %s", output)
+	}
+	if !strings.Contains(output, `"sanitized_input":"{\"article_id\":3,\"outcome\":\"\"}"`) {
+		t.Fatalf("expected sanitized_input contract in output, got: %s", output)
+	}
 }
 
 // TestRunCycleWithLoggingIncludesCycleErrorCauseTop verifies final cycle log contains compact cause top list.

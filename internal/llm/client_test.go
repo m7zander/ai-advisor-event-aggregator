@@ -176,9 +176,9 @@ func TestClientExtract_InvalidJSONResponse(t *testing.T) {
 	}
 }
 
-// TestClientExtract_InvalidJSONResponse_LogsPayload verifies decode failures log stage and full payload.
+// TestClientExtract_InvalidJSONResponse_LogsPayload verifies decode failures log contract includes sanitized payload context.
 // It serves invalid assistant content and captures logger output during extraction.
-// It fails if log output does not include decode stage and offending payload text.
+// It fails if log output does not include required contract fields and payload preview metadata.
 func TestClientExtract_InvalidJSONResponse_LogsPayload(t *testing.T) {
 	in := validInput(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -202,8 +202,14 @@ func TestClientExtract_InvalidJSONResponse_LogsPayload(t *testing.T) {
 	if !strings.Contains(logged, `"stage":"assistant_content"`) {
 		t.Fatalf("expected assistant_content stage in log, got: %s", logged)
 	}
-	if !strings.Contains(logged, `"payload":"not-json"`) {
-		t.Fatalf("expected payload value in log, got: %s", logged)
+	if !strings.Contains(logged, `"failure":"llm_decode_failed"`) {
+		t.Fatalf("expected failure contract in log, got: %s", logged)
+	}
+	if !strings.Contains(logged, `"reaction":"request failed and extraction result rejected"`) {
+		t.Fatalf("expected reaction contract in log, got: %s", logged)
+	}
+	if !strings.Contains(logged, `"sanitized_input":"{\"payload_bytes\":8,\"payload_preview\":\"not-json\",\"stage\":\"assistant_content\"}"`) {
+		t.Fatalf("expected sanitized input in log, got: %s", logged)
 	}
 }
 
