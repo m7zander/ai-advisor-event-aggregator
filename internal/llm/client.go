@@ -103,7 +103,12 @@ func (c *Client) Extract(ctx context.Context, in extract.ExtractInput) (extract.
 	}
 	defer func() {
 		if cerr := resp.Body.Close(); cerr != nil {
-			llmLogger.Error(ctx, "llm.http_response_body_close_failed", "llm/client", "failed to close http response body", cerr,
+			llmLogger.ErrorWithContract(ctx, "llm.http_response_body_close_failed", "llm/client", "failed to close http response body", cerr, logging.ErrorContract{
+				Failure:        "llm_response_body_close_failed",
+				Cause:          cerr.Error(),
+				SanitizedInput: sanitizeJSONLogInput("", nil),
+				Reaction:       "connection cleanup failed; request already completed",
+			},
 				logging.Field{Key: "operation", Value: "extract_chat_completions"},
 			)
 		}
@@ -191,10 +196,30 @@ func decodeJSONAllowUnknownFields(body []byte, dst any) error {
 // decodeErr is the original decode error.
 // It returns no value. Side effect: emits one log line through the process logger for platform log aggregation.
 func logJSONDecodeFailure(ctx context.Context, stage string, payload []byte, decodeErr error) {
-	llmLogger.Error(ctx, "llm.decode_json_failed", "llm/client", "llm json decode failure", decodeErr,
+	llmLogger.ErrorWithContract(ctx, "llm.decode_json_failed", "llm/client", "llm json decode failure", decodeErr, logging.ErrorContract{
+		Failure:        "llm_decode_failed",
+		Cause:          decodeErr.Error(),
+		SanitizedInput: sanitizeJSONLogInput(stage, payload),
+		Reaction:       "request failed and extraction result rejected",
+	},
 		logging.Field{Key: "stage", Value: strings.TrimSpace(stage)},
-		logging.Field{Key: "payload", Value: string(payload)},
 	)
+}
+
+func sanitizeJSONLogInput(stage string, payload []byte) string {
+	trimmed := strings.TrimSpace(string(payload))
+	if len(trimmed) > 256 {
+		trimmed = trimmed[:256]
+	}
+	body, err := json.Marshal(map[string]any{
+		"stage":           strings.TrimSpace(stage),
+		"payload_preview": trimmed,
+		"payload_bytes":   len(payload),
+	})
+	if err != nil {
+		return `{"error":"sanitize_failed"}`
+	}
+	return string(body)
 }
 
 // decodeExtractResultJSON decodes one extractor output JSON object into dst while enforcing strict key validation.

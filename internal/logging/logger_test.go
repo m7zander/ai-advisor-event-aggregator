@@ -144,6 +144,9 @@ func TestLoggerErrorWithContractIncludesMandatoryFields(t *testing.T) {
 	if entry["reaction"] != "returned 500" {
 		t.Fatalf("unexpected reaction: %v", entry["reaction"])
 	}
+	if entry["limit"] != float64(50) {
+		t.Fatalf("expected existing contextual fields to remain, got: %v", entry["limit"])
+	}
 }
 
 func TestLoggerMarshalFailureFallbackPreservesRequestID(t *testing.T) {

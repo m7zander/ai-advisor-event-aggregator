@@ -3,6 +3,7 @@ package scheduler
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"math"
 	"sort"
@@ -134,7 +135,18 @@ func (s *Scheduler) runCycleWithLogging(ctx context.Context) {
 	s.logger.Info(ctx, "app.scheduler.cycle_started", "app/scheduler", "scheduler cycle started")
 	stats, err := s.runCycle(ctx)
 	if err != nil {
-		s.logger.Error(ctx, "app.scheduler.cycle_failed", "app/scheduler", "scheduler cycle failed", err)
+		sanitizedInput := mustJSON(map[string]any{
+			"max_pages_per_cycle":  s.cfg.MaxPagesPerCycle,
+			"page_size":            s.cfg.PageSize,
+			"dispatch_concurrency": s.cfg.DispatchConcurrency,
+			"batch_size":           s.cfg.BatchSize,
+		})
+		s.logger.ErrorWithContract(ctx, "app.scheduler.cycle_failed", "app/scheduler", "scheduler cycle failed", err, logging.ErrorContract{
+			Failure:        "scheduler_cycle_failed",
+			Cause:          err.Error(),
+			SanitizedInput: sanitizedInput,
+			Reaction:       "cycle aborted; retry on next tick",
+		})
 		return
 	}
 	discoveredCount := len(stats.DiscoveredIDs)
@@ -204,7 +216,12 @@ func (s *Scheduler) runCycle(ctx context.Context) (CycleStats, error) {
 		if convErr != nil {
 			stats.Failed += len(chunk)
 			stats.DispatchErrors++
-			s.logger.Error(ctx, "app.scheduler.dispatch_batch_failed", "app/scheduler", "scheduler dispatch batch failed", convErr, logging.Field{Key: "article_ids", Value: chunk})
+			s.logger.ErrorWithContract(ctx, "app.scheduler.dispatch_batch_failed", "app/scheduler", "scheduler dispatch batch failed", convErr, logging.ErrorContract{
+				Failure:        "scheduler_dispatch_batch_failed",
+				Cause:          convErr.Error(),
+				SanitizedInput: mustJSON(map[string]any{"article_ids": chunk, "batch_size": len(chunk)}),
+				Reaction:       "batch skipped; cycle continues",
+			}, logging.Field{Key: "article_ids", Value: chunk})
 			continue
 		}
 
@@ -215,7 +232,12 @@ func (s *Scheduler) runCycle(ctx context.Context) (CycleStats, error) {
 		if dispatchErr != nil {
 			stats.Failed += len(chunk)
 			stats.DispatchErrors++
-			s.logger.Error(ctx, "app.scheduler.dispatch_batch_failed", "app/scheduler", "scheduler dispatch batch failed", dispatchErr, logging.Field{Key: "article_ids", Value: chunk})
+			s.logger.ErrorWithContract(ctx, "app.scheduler.dispatch_batch_failed", "app/scheduler", "scheduler dispatch batch failed", dispatchErr, logging.ErrorContract{
+				Failure:        "scheduler_dispatch_batch_failed",
+				Cause:          dispatchErr.Error(),
+				SanitizedInput: mustJSON(map[string]any{"article_ids": chunk, "batch_size": len(chunk), "dispatch_concurrency": s.cfg.DispatchConcurrency}),
+				Reaction:       "batch skipped; cycle continues",
+			}, logging.Field{Key: "article_ids", Value: chunk})
 			continue
 		}
 		countBatchOutcomes(&stats, result)
@@ -290,7 +312,12 @@ func (s *Scheduler) fetchEligibleArticles(ctx context.Context) ([]UpstreamArticl
 	for page := 0; page < s.cfg.MaxPagesPerCycle; page++ {
 		resp, err := s.upstreamClient.ListEligibleArticles(ctx, s.cfg.PageSize, offset)
 		if err != nil {
-			s.logger.Error(ctx, "app.scheduler.upstream_fetch_failed", "app/scheduler", "scheduler upstream fetch failure", err,
+			s.logger.ErrorWithContract(ctx, "app.scheduler.upstream_fetch_failed", "app/scheduler", "scheduler upstream fetch failure", err, logging.ErrorContract{
+				Failure:        "scheduler_upstream_fetch_failed",
+				Cause:          err.Error(),
+				SanitizedInput: mustJSON(map[string]any{"page": page + 1, "offset": offset, "page_size": s.cfg.PageSize}),
+				Reaction:       "cycle aborted; retry on next tick",
+			},
 				logging.Field{Key: "page", Value: page + 1},
 				logging.Field{Key: "offset", Value: offset},
 			)
@@ -510,7 +537,12 @@ func (s *Scheduler) logBatchErrorSummary(result appextraction.PersistBatchResult
 		}
 
 		if s.cfg.LogFailedItems {
-			s.logger.Error(context.Background(), "app.scheduler.dispatch_batch_failed_item", "app/scheduler", "scheduler dispatch batch failed item", fmt.Errorf("%s", item.Error),
+			s.logger.ErrorWithContract(context.Background(), "app.scheduler.dispatch_batch_failed_item", "app/scheduler", "scheduler dispatch batch failed item", fmt.Errorf("%s", item.Error), logging.ErrorContract{
+				Failure:        "scheduler_dispatch_item_failed",
+				Cause:          item.Error,
+				SanitizedInput: mustJSON(map[string]any{"article_id": item.ArticleID, "outcome": item.Outcome}),
+				Reaction:       "item marked failed; batch continues",
+			},
 				logging.Field{Key: "article_id", Value: item.ArticleID},
 				logging.Field{Key: "outcome", Value: item.Outcome},
 			)
@@ -616,6 +648,14 @@ func parseErrorCauseKey(key string) (string, string) {
 		return "unknown", key
 	}
 	return category, cause
+}
+
+func mustJSON(value any) string {
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return `{"error":"sanitize_failed"}`
+	}
+	return string(encoded)
 }
 
 // chunkIDs splits IDs into fixed-size chunks preserving original order.
