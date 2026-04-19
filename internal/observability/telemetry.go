@@ -2,11 +2,13 @@ package observability
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
 	"path"
+	"strings"
 	"sync"
 	"time"
 
@@ -106,6 +108,8 @@ func InitTelemetry(ctx context.Context, endpoint string, serviceName string) (*T
 	}
 	if useInsecureTransport {
 		traceOptions = append(traceOptions, otlptracehttp.WithInsecure())
+	} else {
+		traceOptions = append(traceOptions, otlptracehttp.WithTLSClientConfig(&tls.Config{}))
 	}
 	traceExporter, err := otlptracehttp.New(ctx, traceOptions...)
 	if err != nil {
@@ -120,6 +124,8 @@ func InitTelemetry(ctx context.Context, endpoint string, serviceName string) (*T
 	}
 	if useInsecureTransport {
 		metricOptions = append(metricOptions, otlpmetrichttp.WithInsecure())
+	} else {
+		metricOptions = append(metricOptions, otlpmetrichttp.WithTLSClientConfig(&tls.Config{}))
 	}
 	metricExporter, err := otlpmetrichttp.New(ctx, metricOptions...)
 	if err != nil {
@@ -137,6 +143,8 @@ func InitTelemetry(ctx context.Context, endpoint string, serviceName string) (*T
 	}
 	if useInsecureTransport {
 		logOptions = append(logOptions, otlploghttp.WithInsecure())
+	} else {
+		logOptions = append(logOptions, otlploghttp.WithTLSClientConfig(&tls.Config{}))
 	}
 	logExporter, err := otlploghttp.New(ctx, logOptions...)
 	if err != nil {
@@ -204,6 +212,9 @@ func parseOTLPEndpoint(endpoint string) (string, bool, string, error) {
 	}
 	if normalizedPathPrefix == "." {
 		normalizedPathPrefix = "/"
+	}
+	if normalizedPathPrefix == "/v1" || strings.HasPrefix(normalizedPathPrefix, "/v1/") {
+		return "", false, "", fmt.Errorf("path %q is a signal-specific OTLP path; use a base endpoint or proxy prefix instead", normalizedPathPrefix)
 	}
 
 	return parsedURL.Host, parsedURL.Scheme == "http", normalizedPathPrefix, nil

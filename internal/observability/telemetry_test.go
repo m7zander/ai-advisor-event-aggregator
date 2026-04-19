@@ -263,6 +263,11 @@ func TestParseOTLPEndpoint(t *testing.T) {
 			wantPath:     "/otel",
 		},
 		{
+			name:     "signal path rejected",
+			endpoint: "https://collector.example.com/v1/traces",
+			wantErr:  "signal-specific OTLP path",
+		},
+		{
 			name:     "invalid scheme",
 			endpoint: "grpc://collector.internal:4318",
 			wantErr:  "unsupported URL scheme",
