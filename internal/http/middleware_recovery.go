@@ -158,15 +158,22 @@ func (w *recoveryResponseWriter) Push(target string, opts *http.PushOptions) err
 func (w *recoveryResponseWriter) ReadFrom(src io.Reader) (int64, error) {
 	readerFrom, ok := w.ResponseWriter.(io.ReaderFrom)
 	if !ok {
+		bytesWritten, copyErr := io.Copy(w.ResponseWriter, src)
+		if bytesWritten > 0 {
+			if !w.wroteHeader {
+				w.wroteHeader = true
+			}
+			w.wroteBody = true
+		}
+		return bytesWritten, copyErr
+	}
+
+	bytesWritten, readFromErr := readerFrom.ReadFrom(src)
+	if bytesWritten > 0 {
 		if !w.wroteHeader {
 			w.wroteHeader = true
 		}
 		w.wroteBody = true
-		return io.Copy(w.ResponseWriter, src)
 	}
-	if !w.wroteHeader {
-		w.wroteHeader = true
-	}
-	w.wroteBody = true
-	return readerFrom.ReadFrom(src)
+	return bytesWritten, readFromErr
 }

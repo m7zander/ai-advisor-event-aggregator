@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -132,6 +133,78 @@ func TestRecoveryMiddleware_DownstreamErrAbortHandlerPreservesSentinelSemantics(
 	h.ServeHTTP(rw, req)
 	t.Fatal("expected panic with http.ErrAbortHandler")
 }
+
+func TestRecoveryMiddleware_PanicAfterReadFromEmptyReaderReturnsSafe500(t *testing.T) {
+	var stderr bytes.Buffer
+	logger := logging.NewWithWriters(&bytes.Buffer{}, &stderr)
+
+	h := RecoveryMiddleware(logger, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		readerFrom, ok := w.(io.ReaderFrom)
+		if !ok {
+			t.Fatal("wrapped writer must support io.ReaderFrom")
+		}
+		bytesWritten, err := readerFrom.ReadFrom(strings.NewReader(""))
+		if err != nil {
+			t.Fatalf("readfrom failed: %v", err)
+		}
+		if bytesWritten != 0 {
+			t.Fatalf("bytesWritten=%d, want 0", bytesWritten)
+		}
+		panic("boom after empty readfrom")
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/stream-empty", nil)
+	req = req.WithContext(withRequestContextIDs(req.Context(), "req-readfrom-empty", trace.TraceID{11}, trace.SpanID{12}))
+	rw := httptest.NewRecorder()
+
+	h.ServeHTTP(rw, req)
+
+	if rw.Code != http.StatusInternalServerError {
+		t.Fatalf("status=%d, want %d", rw.Code, http.StatusInternalServerError)
+	}
+	entry := parseSingleJSONLogLine(t, stderr.String())
+	if entry["reaction"] != "returned safe 500 response" {
+		t.Fatalf("reaction=%v, want safe 500 reaction", entry["reaction"])
+	}
+}
+
+func TestRecoveryMiddleware_PanicAfterReadFromNonEmptyAborts(t *testing.T) {
+	var stderr bytes.Buffer
+	logger := logging.NewWithWriters(&bytes.Buffer{}, &stderr)
+
+	h := RecoveryMiddleware(logger, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		readerFrom, ok := w.(io.ReaderFrom)
+		if !ok {
+			t.Fatal("wrapped writer must support io.ReaderFrom")
+		}
+		bytesWritten, err := readerFrom.ReadFrom(strings.NewReader("payload"))
+		if err != nil {
+			t.Fatalf("readfrom failed: %v", err)
+		}
+		if bytesWritten == 0 {
+			t.Fatal("expected non-zero bytes written")
+		}
+		panic("boom after non-empty readfrom")
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/stream-non-empty", nil)
+	req = req.WithContext(withRequestContextIDs(req.Context(), "req-readfrom", trace.TraceID{13}, trace.SpanID{14}))
+	rw := httptest.NewRecorder()
+
+	defer func() {
+		if recovered := recover(); recovered != http.ErrAbortHandler {
+			t.Fatalf("recovered panic=%v, want %v", recovered, http.ErrAbortHandler)
+		}
+		entry := parseSingleJSONLogLine(t, stderr.String())
+		if entry["reaction"] != "aborted request because response already started" {
+			t.Fatalf("reaction=%v, want abort reaction", entry["reaction"])
+		}
+	}()
+
+	h.ServeHTTP(rw, req)
+	t.Fatal("expected panic with http.ErrAbortHandler")
+}
+
 func TestRecoveryMiddleware_PanicAfterFlushAborts(t *testing.T) {
 	var stderr bytes.Buffer
 	logger := logging.NewWithWriters(&bytes.Buffer{}, &stderr)
