@@ -122,19 +122,27 @@ func TestMigrationsDirectory_RuntimeScopeOnly(t *testing.T) {
 	}
 }
 
-func TestMigrationsLegacyArchive_ContainsOnlySQLFiles(t *testing.T) {
+func TestMigrationsLegacyArchive_ContainsOnlyReferenceDocumentation(t *testing.T) {
 	entries, err := os.ReadDir(filepath.Join("migrations", "legacy_archive"))
 	if err != nil {
 		t.Fatalf("read legacy archive directory: %v", err)
 	}
 
+	var foundReferenceReadme bool
 	for _, entry := range entries {
 		if entry.IsDir() {
 			continue
 		}
-		if filepath.Ext(entry.Name()) != ".sql" {
-			t.Fatalf("legacy archive must only contain historical SQL files, found %q", entry.Name())
+		if filepath.Ext(entry.Name()) == ".sql" {
+			t.Fatalf("legacy archive must not contain SQL files in service repo, found %q", entry.Name())
 		}
+		if entry.Name() == "README.md" {
+			foundReferenceReadme = true
+		}
+	}
+
+	if !foundReferenceReadme {
+		t.Fatal("legacy archive must contain README.md with compliance archive reference")
 	}
 }
 

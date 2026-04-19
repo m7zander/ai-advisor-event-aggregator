@@ -1,4 +1,4 @@
-<!-- This file documents canonical runtime schema ownership and archived SQL history. -->
+<!-- This file documents canonical runtime schema ownership and legacy SQL compliance handling. -->
 
 # Migration Ownership
 
@@ -18,26 +18,22 @@ Dieser Pfad deckt nur den verbleibenden Service-Scope ab und erzeugt/verwaltet a
 
 Es gibt keinen zweiten produktiven SQL-Dateipfad unter `migrations/`, der beim App-Startup ausgeführt wird.
 
-## Rein historische Legacy-SQL-Dateien (nicht runtime-relevant)
+## Finale Policy für historische Legacy-SQL-Dateien
 
-Alle historischen SQL-Dateien wurden nach `migrations/legacy_archive/` verschoben und sind nur noch Dokumentations-/Audit-Historie:
+**Verbindliche Entscheidung (final):** `legacy_archive/*.sql` bleibt **nicht** dauerhaft im Service-Repository. Die Dateien werden in ein separates Compliance-Archiv ausgelagert.
 
-- `legacy_archive/000001_create_article_extractions.sql`
-- `legacy_archive/000002_drop_extracted_duplicate_candidate.sql`
-- `legacy_archive/000003_create_aggregated_events.sql`
-- `legacy_archive/000004_add_extracted_industries.sql`
-- `legacy_archive/000005_add_aggregated_event_industries.sql`
-- `legacy_archive/000006_create_event_security_impacts.sql`
-- `legacy_archive/000007_drop_event_security_impacts.sql`
-- `legacy_archive/000008_rename_legacy_tables_with_service_prefix.sql`
-- `legacy_archive/000009_decommission_legacy_impact_tables.sql`
+Auslagerungsziel:
+
+- `compliance://event-aggregator/sql-legacy-archive/runtime-schema-cutover-2026-04-19/`
+
+Im Service-Repository verbleibt unter `migrations/legacy_archive/` nur noch eine knappe Referenz-Dokumentation mit Dateiliste und Zielreferenz.
 
 ### Verbindliche Abgrenzung
 
-`migrations/legacy_archive/*.sql` ist ein **reines Audit-/Compliance-Archiv**.
+`migrations/legacy_archive/` ist nach dem Cutover **kein SQL-Archiv im Repo mehr**, sondern nur ein Verweis auf das externe Compliance-Archiv.
 
-- Diese Dateien sind **nicht Teil des Runtime-Migrationspfads**.
-- Diese Dateien werden beim Startup **niemals** geladen oder ausgeführt.
+- Diese Referenzdatei ist **nicht Teil des Runtime-Migrationspfads**.
+- Beim Startup werden aus `migrations/legacy_archive/` **keine SQL-Dateien** geladen oder ausgeführt.
 - Die **einzige** aktive Migrationseintrittsstelle im Service ist:
   - `internal/repository/extraction/repository.go` → `(*Repository).Migrate`
 
@@ -53,7 +49,7 @@ Ab dieser Cutover-Version gilt produktiv ausschließlich der kanonische Runtime-
 
 1. Datenbanken mit Legacy-Tabellennamen müssen **vor** Deployment auf `runtime-schema-cutover-2026-04-19` durch einen expliziten, separat geplanten Ops-Migrationsschritt auf `event_aggregator_*` umgestellt werden.
 2. Die Anwendung erstellt ab Cutover nur noch fehlende kanonische Tabellen/Indizes und führt kanonische Legacy-Fixups (Spaltenergänzungen innerhalb `event_aggregator_*`) idempotent aus.
-3. Historische SQL-Dateien in `migrations/legacy_archive/` bleiben Audit-Historie und sind weiterhin kein Bestandteil des Runtime-Startup-Pfads.
+3. Historische SQL-Dateien liegen ausschließlich im separaten Compliance-Archiv und sind kein Bestandteil des Runtime-Startup-Pfads.
 
 ## Policy: keine doppelte Ownership
 
