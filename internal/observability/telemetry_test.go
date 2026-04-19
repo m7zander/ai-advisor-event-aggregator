@@ -5,9 +5,10 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"sync"
-	"sync/atomic"
 	"testing"
+	"time"
 
+	"go.opentelemetry.io/otel/attribute"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 )
@@ -22,7 +23,7 @@ func TestInFlightRequestsObservableGaugeReportsCurrentValue(t *testing.T) {
 		_ = meterProvider.Shutdown(ctx)
 	})
 
-	inFlightCurrent := &atomic.Int64{}
+	inFlightCurrent := newInFlightTracker()
 	_, _, _, _, registration, err := initHTTPMetrics(meterProvider.Meter("test-meter"), inFlightCurrent)
 	if err != nil {
 		t.Fatalf("initHTTPMetrics() error = %v", err)
@@ -31,13 +32,18 @@ func TestInFlightRequestsObservableGaugeReportsCurrentValue(t *testing.T) {
 		_ = registration.Unregister()
 	})
 
-	inFlightCurrent.Store(4)
-	if got := collectInFlightRequests(t, ctx, reader); got != 4 {
+	inFlightCurrent.increment(http.MethodGet, "/events")
+	inFlightCurrent.increment(http.MethodGet, "/events")
+	inFlightCurrent.increment(http.MethodGet, "/events")
+	inFlightCurrent.increment(http.MethodGet, "/events")
+	if got := collectInFlightRequestsValue(t, ctx, reader, http.MethodGet, "/events"); got != 4 {
 		t.Fatalf("in_flight_requests value = %d, want 4", got)
 	}
 
-	inFlightCurrent.Store(1)
-	if got := collectInFlightRequests(t, ctx, reader); got != 1 {
+	inFlightCurrent.decrement(http.MethodGet, "/events")
+	inFlightCurrent.decrement(http.MethodGet, "/events")
+	inFlightCurrent.decrement(http.MethodGet, "/events")
+	if got := collectInFlightRequestsValue(t, ctx, reader, http.MethodGet, "/events"); got != 1 {
 		t.Fatalf("in_flight_requests value = %d, want 1", got)
 	}
 }
@@ -52,7 +58,7 @@ func TestHTTPMiddlewareInFlightLifecycle(t *testing.T) {
 		_ = meterProvider.Shutdown(ctx)
 	})
 
-	inFlightCurrent := &atomic.Int64{}
+	inFlightCurrent := newInFlightTracker()
 	requestCount, requestDurationMS, errorCount, inFlightRequests, registration, err := initHTTPMetrics(meterProvider.Meter("test-meter"), inFlightCurrent)
 	if err != nil {
 		t.Fatalf("initHTTPMetrics() error = %v", err)
@@ -89,18 +95,110 @@ func TestHTTPMiddlewareInFlightLifecycle(t *testing.T) {
 	}()
 
 	<-started
-	if got := collectInFlightRequests(t, ctx, reader); got != 1 {
+	if got := waitForInFlightRequestsValue(t, ctx, reader, http.MethodGet, "/events", 1); got != 1 {
 		t.Fatalf("in_flight_requests value while request in flight = %d, want 1", got)
 	}
 
 	close(release)
 	wg.Wait()
-	if got := collectInFlightRequests(t, ctx, reader); got != 0 {
+	if got := waitForInFlightRequestsValue(t, ctx, reader, http.MethodGet, "/events", 0); got != 0 {
 		t.Fatalf("in_flight_requests value after request completion = %d, want 0", got)
 	}
 }
 
-func collectInFlightRequests(t *testing.T, ctx context.Context, reader *sdkmetric.ManualReader) int64 {
+func TestHTTPMiddlewareInFlightLifecyclePerRouteAndMethod(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	reader := sdkmetric.NewManualReader()
+	meterProvider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	t.Cleanup(func() {
+		_ = meterProvider.Shutdown(ctx)
+	})
+
+	inFlightCurrent := newInFlightTracker()
+	requestCount, requestDurationMS, errorCount, inFlightRequests, registration, err := initHTTPMetrics(meterProvider.Meter("test-meter"), inFlightCurrent)
+	if err != nil {
+		t.Fatalf("initHTTPMetrics() error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = registration.Unregister()
+	})
+
+	telemetry := &Telemetry{
+		requestCount:      requestCount,
+		requestDurationMS: requestDurationMS,
+		errorCount:        errorCount,
+		inFlightRequests:  inFlightRequests,
+		inFlightCurrent:   inFlightCurrent,
+	}
+
+	startedFirst := make(chan struct{})
+	startedSecond := make(chan struct{})
+	release := make(chan struct{})
+	var firstOnce sync.Once
+	var secondOnce sync.Once
+
+	handler := telemetry.HTTPMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/events" {
+			firstOnce.Do(func() { close(startedFirst) })
+		}
+		if r.URL.Path == "/health" {
+			secondOnce.Do(func() { close(startedSecond) })
+		}
+		<-release
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		req := httptest.NewRequest(http.MethodGet, "/events", nil)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+	}()
+	go func() {
+		defer wg.Done()
+		req := httptest.NewRequest(http.MethodPost, "/health", nil)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+	}()
+
+	<-startedFirst
+	<-startedSecond
+	if got := waitForInFlightRequestsValue(t, ctx, reader, http.MethodGet, "/events", 1); got != 1 {
+		t.Fatalf("in_flight_requests GET /events = %d, want 1", got)
+	}
+	if got := waitForInFlightRequestsValue(t, ctx, reader, http.MethodPost, "/health", 1); got != 1 {
+		t.Fatalf("in_flight_requests POST /health = %d, want 1", got)
+	}
+
+	close(release)
+	wg.Wait()
+	if got := waitForInFlightRequestsValue(t, ctx, reader, http.MethodGet, "/events", 0); got != 0 {
+		t.Fatalf("in_flight_requests GET /events after completion = %d, want 0", got)
+	}
+	if got := waitForInFlightRequestsValue(t, ctx, reader, http.MethodPost, "/health", 0); got != 0 {
+		t.Fatalf("in_flight_requests POST /health after completion = %d, want 0", got)
+	}
+}
+
+func waitForInFlightRequestsValue(t *testing.T, ctx context.Context, reader *sdkmetric.ManualReader, method string, route string, want int64) int64 {
+	t.Helper()
+
+	const attempts = 20
+	for i := 0; i < attempts; i++ {
+		got := collectInFlightRequestsValue(t, ctx, reader, method, route)
+		if got == want {
+			return got
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	return collectInFlightRequestsValue(t, ctx, reader, method, route)
+}
+
+func collectInFlightRequestsValue(t *testing.T, ctx context.Context, reader *sdkmetric.ManualReader, method string, route string) int64 {
 	t.Helper()
 
 	var rm metricdata.ResourceMetrics
@@ -118,13 +216,24 @@ func collectInFlightRequests(t *testing.T, ctx context.Context, reader *sdkmetri
 			if !ok {
 				t.Fatalf("in_flight_requests data type = %T, want metricdata.Gauge[int64]", metric.Data)
 			}
-			if len(gauge.DataPoints) != 1 {
-				t.Fatalf("in_flight_requests datapoint count = %d, want 1", len(gauge.DataPoints))
+			for _, point := range gauge.DataPoints {
+				pointMethod, methodFound := findAttributeValue(point.Attributes, "http.method")
+				pointRoute, routeFound := findAttributeValue(point.Attributes, "http.route")
+				if methodFound && routeFound && pointMethod == method && pointRoute == route {
+					return point.Value
+				}
 			}
-			return gauge.DataPoints[0].Value
+			return 0
 		}
 	}
 
-	t.Fatal("in_flight_requests metric not found")
 	return 0
+}
+
+func findAttributeValue(set attribute.Set, key string) (string, bool) {
+	value, ok := set.Value(attribute.Key(key))
+	if !ok {
+		return "", false
+	}
+	return value.AsString(), true
 }

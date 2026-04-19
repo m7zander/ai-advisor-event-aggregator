@@ -5,7 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"sync/atomic"
+	"sync"
 	"time"
 
 	"go.opentelemetry.io/otel"
@@ -28,8 +28,53 @@ type Telemetry struct {
 	requestDurationMS metric.Float64Histogram
 	errorCount        metric.Int64Counter
 	inFlightRequests  metric.Int64ObservableGauge
-	inFlightCurrent   *atomic.Int64
+	inFlightCurrent   *inFlightTracker
 	shutdownFns       []func(context.Context) error
+}
+
+type inFlightKey struct {
+	method string
+	route  string
+}
+
+type inFlightTracker struct {
+	mu     sync.RWMutex
+	counts map[inFlightKey]int64
+}
+
+func newInFlightTracker() *inFlightTracker {
+	return &inFlightTracker{
+		counts: make(map[inFlightKey]int64),
+	}
+}
+
+func (t *inFlightTracker) increment(method string, route string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	key := inFlightKey{method: method, route: route}
+	t.counts[key]++
+}
+
+func (t *inFlightTracker) decrement(method string, route string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	key := inFlightKey{method: method, route: route}
+	current := t.counts[key]
+	if current <= 1 {
+		delete(t.counts, key)
+		return
+	}
+	t.counts[key] = current - 1
+}
+
+func (t *inFlightTracker) snapshot() map[inFlightKey]int64 {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	cloned := make(map[inFlightKey]int64, len(t.counts))
+	for key, value := range t.counts {
+		cloned[key] = value
+	}
+	return cloned
 }
 
 func InitTelemetry(ctx context.Context, endpoint string, serviceName string) (*Telemetry, error) {
@@ -71,7 +116,7 @@ func InitTelemetry(ctx context.Context, endpoint string, serviceName string) (*T
 	))
 
 	meter := otel.Meter("ai-advisor-event-aggregator/http")
-	inFlightCurrent := &atomic.Int64{}
+	inFlightCurrent := newInFlightTracker()
 	requestCount, requestDurationMS, errorCount, inFlightRequests, inFlightRegistration, err := initHTTPMetrics(meter, inFlightCurrent)
 	if err != nil {
 		return nil, err
@@ -94,7 +139,7 @@ func InitTelemetry(ctx context.Context, endpoint string, serviceName string) (*T
 	}, nil
 }
 
-func initHTTPMetrics(meter metric.Meter, inFlightCurrent *atomic.Int64) (
+func initHTTPMetrics(meter metric.Meter, inFlightCurrent *inFlightTracker) (
 	metric.Int64Counter,
 	metric.Float64Histogram,
 	metric.Int64Counter,
@@ -121,7 +166,16 @@ func initHTTPMetrics(meter metric.Meter, inFlightCurrent *atomic.Int64) (
 
 	inFlightRegistration, err := meter.RegisterCallback(
 		func(ctx context.Context, observer metric.Observer) error {
-			observer.ObserveInt64(inFlightRequests, inFlightCurrent.Load())
+			for key, count := range inFlightCurrent.snapshot() {
+				observer.ObserveInt64(
+					inFlightRequests,
+					count,
+					metric.WithAttributes(
+						attribute.String("http.method", key.method),
+						attribute.String("http.route", key.route),
+					),
+				)
+			}
 			return nil
 		},
 		inFlightRequests,
@@ -161,8 +215,8 @@ func (t *Telemetry) HTTPMiddleware(next http.Handler) http.Handler {
 		}
 		start := time.Now()
 		if t.inFlightCurrent != nil {
-			t.inFlightCurrent.Add(1)
-			defer t.inFlightCurrent.Add(-1)
+			t.inFlightCurrent.increment(r.Method, route)
+			defer t.inFlightCurrent.decrement(r.Method, route)
 		}
 
 		recorder := &statusRecorder{ResponseWriter: w, statusCode: http.StatusOK}
