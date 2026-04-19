@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"strings"
@@ -121,23 +122,33 @@ func TestMigrationsDirectory_RuntimeScopeOnly(t *testing.T) {
 	}
 }
 
-func TestMigrationsLegacyArchive_ContainsHistoricalSQL(t *testing.T) {
+func TestMigrationsLegacyArchive_ContainsOnlySQLFiles(t *testing.T) {
 	entries, err := os.ReadDir(filepath.Join("migrations", "legacy_archive"))
 	if err != nil {
 		t.Fatalf("read legacy archive directory: %v", err)
 	}
 
-	sqlCount := 0
 	for _, entry := range entries {
 		if entry.IsDir() {
 			continue
 		}
-		if filepath.Ext(entry.Name()) == ".sql" {
-			sqlCount++
+		if filepath.Ext(entry.Name()) != ".sql" {
+			t.Fatalf("legacy archive must only contain historical SQL files, found %q", entry.Name())
 		}
 	}
+}
 
-	if sqlCount == 0 {
-		t.Fatal("expected at least one archived legacy SQL migration file")
+func TestMigrationsReadme_ExplicitlyExcludesLegacyArchiveFromRuntimePath(t *testing.T) {
+	content, err := os.ReadFile(filepath.Join("migrations", "README.md"))
+	if err != nil {
+		t.Fatalf("read migrations README: %v", err)
+	}
+
+	if !bytes.Contains(content, []byte("nicht Teil des Runtime-Migrationspfads")) {
+		t.Fatal("migrations README must clearly declare that legacy archive SQL files are not part of the runtime migration path")
+	}
+	if !bytes.Contains(content, []byte("internal/repository/extraction/repository.go")) ||
+		!bytes.Contains(content, []byte("(*Repository).Migrate")) {
+		t.Fatal("migrations README must reference the active runtime migration entrypoint in repository.go via (*Repository).Migrate")
 	}
 }
