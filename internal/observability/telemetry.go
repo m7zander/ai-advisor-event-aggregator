@@ -4,8 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net/url"
 	"net/http"
+	"net/url"
+	"path"
 	"sync"
 	"time"
 
@@ -89,7 +90,7 @@ func (t *inFlightTracker) snapshot() map[inFlightKey]int64 {
 }
 
 func InitTelemetry(ctx context.Context, endpoint string, serviceName string) (*Telemetry, error) {
-	otlpEndpoint, useInsecureTransport, err := parseOTLPEndpoint(endpoint)
+	otlpEndpoint, useInsecureTransport, otlpPathPrefix, err := parseOTLPEndpoint(endpoint)
 	if err != nil {
 		return nil, fmt.Errorf("parse otlp endpoint: %w", err)
 	}
@@ -101,6 +102,7 @@ func InitTelemetry(ctx context.Context, endpoint string, serviceName string) (*T
 
 	traceOptions := []otlptracehttp.Option{
 		otlptracehttp.WithEndpoint(otlpEndpoint),
+		otlptracehttp.WithURLPath(joinOTLPPath(otlpPathPrefix, "/v1/traces")),
 	}
 	if useInsecureTransport {
 		traceOptions = append(traceOptions, otlptracehttp.WithInsecure())
@@ -114,6 +116,7 @@ func InitTelemetry(ctx context.Context, endpoint string, serviceName string) (*T
 
 	metricOptions := []otlpmetrichttp.Option{
 		otlpmetrichttp.WithEndpoint(otlpEndpoint),
+		otlpmetrichttp.WithURLPath(joinOTLPPath(otlpPathPrefix, "/v1/metrics")),
 	}
 	if useInsecureTransport {
 		metricOptions = append(metricOptions, otlpmetrichttp.WithInsecure())
@@ -130,6 +133,7 @@ func InitTelemetry(ctx context.Context, endpoint string, serviceName string) (*T
 
 	logOptions := []otlploghttp.Option{
 		otlploghttp.WithEndpoint(otlpEndpoint),
+		otlploghttp.WithURLPath(joinOTLPPath(otlpPathPrefix, "/v1/logs")),
 	}
 	if useInsecureTransport {
 		logOptions = append(logOptions, otlploghttp.WithInsecure())
@@ -173,30 +177,44 @@ func InitTelemetry(ctx context.Context, endpoint string, serviceName string) (*T
 	}, nil
 }
 
-func parseOTLPEndpoint(endpoint string) (string, bool, error) {
+func parseOTLPEndpoint(endpoint string) (string, bool, string, error) {
 	parsedURL, err := url.Parse(endpoint)
 	if err != nil {
-		return "", false, fmt.Errorf("invalid URL %q: %w", endpoint, err)
+		return "", false, "", fmt.Errorf("invalid URL %q: %w", endpoint, err)
 	}
 	if parsedURL.Scheme != "http" && parsedURL.Scheme != "https" {
-		return "", false, fmt.Errorf("unsupported URL scheme %q, expected http or https", parsedURL.Scheme)
+		return "", false, "", fmt.Errorf("unsupported URL scheme %q, expected http or https", parsedURL.Scheme)
 	}
 	if parsedURL.Host == "" {
-		return "", false, errors.New("missing host in URL")
+		return "", false, "", errors.New("missing host in URL")
 	}
 	if parsedURL.User != nil {
-		return "", false, errors.New("userinfo in OTLP endpoint is not allowed; configure authentication via supported headers/environment instead")
-	}
-	if parsedURL.Path != "" && parsedURL.Path != "/" {
-		return "", false, fmt.Errorf("path %q is not allowed; use base OTLP endpoint without signal path", parsedURL.Path)
+		return "", false, "", errors.New("userinfo in OTLP endpoint is not allowed; configure authentication via supported headers/environment instead")
 	}
 	if parsedURL.RawQuery != "" {
-		return "", false, errors.New("query string is not allowed in OTLP endpoint")
+		return "", false, "", errors.New("query string is not allowed in OTLP endpoint")
 	}
 	if parsedURL.Fragment != "" {
-		return "", false, errors.New("fragment is not allowed in OTLP endpoint")
+		return "", false, "", errors.New("fragment is not allowed in OTLP endpoint")
 	}
-	return parsedURL.Host, parsedURL.Scheme == "http", nil
+
+	normalizedPathPrefix := "/"
+	if parsedURL.Path != "" {
+		normalizedPathPrefix = path.Clean(parsedURL.Path)
+	}
+	if normalizedPathPrefix == "." {
+		normalizedPathPrefix = "/"
+	}
+
+	return parsedURL.Host, parsedURL.Scheme == "http", normalizedPathPrefix, nil
+}
+
+func joinOTLPPath(prefix string, signalPath string) string {
+	base := prefix
+	if base == "" || base == "." {
+		base = "/"
+	}
+	return path.Join(base, signalPath)
 }
 
 func initHTTPMetrics(meter metric.Meter, inFlightCurrent *inFlightTracker) (

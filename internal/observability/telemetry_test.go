@@ -238,6 +238,7 @@ func TestParseOTLPEndpoint(t *testing.T) {
 		endpoint     string
 		wantHost     string
 		wantInsecure bool
+		wantPath     string
 		wantErr      string
 	}{
 		{
@@ -245,12 +246,21 @@ func TestParseOTLPEndpoint(t *testing.T) {
 			endpoint:     "http://collector.internal:4318",
 			wantHost:     "collector.internal:4318",
 			wantInsecure: true,
+			wantPath:     "/",
 		},
 		{
 			name:         "https endpoint",
 			endpoint:     "https://collector.example.com:4318",
 			wantHost:     "collector.example.com:4318",
 			wantInsecure: false,
+			wantPath:     "/",
+		},
+		{
+			name:         "path prefix allowed",
+			endpoint:     "https://collector.example.com/otel",
+			wantHost:     "collector.example.com",
+			wantInsecure: false,
+			wantPath:     "/otel",
 		},
 		{
 			name:     "invalid scheme",
@@ -261,11 +271,6 @@ func TestParseOTLPEndpoint(t *testing.T) {
 			name:     "missing host",
 			endpoint: "http://",
 			wantErr:  "missing host",
-		},
-		{
-			name:     "path not allowed",
-			endpoint: "http://collector.internal:4318/v1/logs",
-			wantErr:  "path",
 		},
 		{
 			name:     "query not allowed",
@@ -284,7 +289,7 @@ func TestParseOTLPEndpoint(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			gotHost, gotInsecure, err := parseOTLPEndpoint(tt.endpoint)
+			gotHost, gotInsecure, gotPath, err := parseOTLPEndpoint(tt.endpoint)
 			if tt.wantErr != "" {
 				if err == nil {
 					t.Fatalf("parseOTLPEndpoint() error = nil, want substring %q", tt.wantErr)
@@ -303,6 +308,9 @@ func TestParseOTLPEndpoint(t *testing.T) {
 			}
 			if gotInsecure != tt.wantInsecure {
 				t.Fatalf("parseOTLPEndpoint() insecure = %t, want %t", gotInsecure, tt.wantInsecure)
+			}
+			if gotPath != tt.wantPath {
+				t.Fatalf("parseOTLPEndpoint() path prefix = %q, want %q", gotPath, tt.wantPath)
 			}
 		})
 	}
