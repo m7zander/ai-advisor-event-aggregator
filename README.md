@@ -168,6 +168,7 @@ Nicht im Scope:
 - `OTEL_EXPORTER_OTLP_ENDPOINT` (Default: `http://localhost:4318`, als OTLP-HTTP-Basisendpoint mit optionalem Pfadpräfix wie `/otel`; **kein** bereits signal-spezifischer `/v1/...`-Pfad; Signalpfade `/v1/...` werden vom Exporter ergänzt; keine eingebetteten Credentials/Userinfo)
 - `OTEL_SERVICE_NAME` (Default: `ai-advisor-event-aggregator`)
 - Bei `https://`-Endpoints dürfen `OTEL_EXPORTER_OTLP_INSECURE` bzw. signal-spezifische `*_INSECURE`-Flags nicht auf `true` gesetzt sein (Startup-Validierung schlägt sonst fehl).
+- Bei `https://`-Basisendpoint dürfen signal-spezifische Endpoint-Overrides (`OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`, `..._METRICS_ENDPOINT`, `..._LOGS_ENDPOINT`) nicht mit `http://` beginnen.
 
 Scheduler (`internal/app/scheduler`):
 

@@ -348,6 +348,20 @@ func TestValidateNoInsecureOTLPEnv(t *testing.T) {
 			t.Fatalf("validateNoInsecureOTLPEnv(true) unexpected error = %v", err)
 		}
 	})
+
+	t.Run("rejects signal endpoint with http scheme for https base endpoint", func(t *testing.T) {
+		t.Setenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "http://collector.internal:4318/v1/traces")
+		if err := validateNoInsecureOTLPEnv(false); err == nil {
+			t.Fatal("validateNoInsecureOTLPEnv(false) error = nil, want scheme conflict error")
+		}
+	})
+
+	t.Run("allows signal endpoint with https scheme for https base endpoint", func(t *testing.T) {
+		t.Setenv("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT", "https://collector.internal:4318/v1/metrics")
+		if err := validateNoInsecureOTLPEnv(false); err != nil {
+			t.Fatalf("validateNoInsecureOTLPEnv(false) unexpected error = %v", err)
+		}
+	})
 }
 
 func waitForInFlightRequestsValue(t *testing.T, ctx context.Context, reader *sdkmetric.ManualReader, method string, route string, want int64) int64 {

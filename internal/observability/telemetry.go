@@ -251,6 +251,31 @@ func validateNoInsecureOTLPEnv(useInsecureTransport bool) error {
 		}
 	}
 
+	signalEndpointVars := []string{
+		"OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
+		"OTEL_EXPORTER_OTLP_METRICS_ENDPOINT",
+		"OTEL_EXPORTER_OTLP_LOGS_ENDPOINT",
+	}
+	for _, envName := range signalEndpointVars {
+		rawValue := strings.TrimSpace(os.Getenv(envName))
+		if rawValue == "" {
+			continue
+		}
+		parsedURL, err := url.Parse(rawValue)
+		if err != nil {
+			return fmt.Errorf("%s must be a valid URL when set, got %q: %w", envName, rawValue, err)
+		}
+		if parsedURL.Scheme == "" {
+			return fmt.Errorf("%s must include URL scheme http or https, got %q", envName, rawValue)
+		}
+		if parsedURL.Scheme == "http" {
+			return fmt.Errorf("%s=%q conflicts with https OTLP endpoint; use https or unset it", envName, rawValue)
+		}
+		if parsedURL.Scheme != "https" {
+			return fmt.Errorf("%s must use scheme http or https, got %q", envName, parsedURL.Scheme)
+		}
+	}
+
 	return nil
 }
 
