@@ -19,17 +19,12 @@ import (
 	appscheduler "ai-advisor-event-aggregator/internal/app/scheduler"
 	httpapi "ai-advisor-event-aggregator/internal/http"
 	"ai-advisor-event-aggregator/internal/logging"
+	"ai-advisor-event-aggregator/internal/observability"
 	"ai-advisor-event-aggregator/internal/upstream"
 
 	repopkg "ai-advisor-event-aggregator/internal/repository/extraction"
 	_ "github.com/jackc/pgx/v5/stdlib"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
-	"go.opentelemetry.io/otel"
-	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
-	"go.opentelemetry.io/otel/propagation"
-	"go.opentelemetry.io/otel/sdk/resource"
-	sdktrace "go.opentelemetry.io/otel/sdk/trace"
-	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
 )
 
 const (
@@ -112,14 +107,14 @@ func main() {
 	if err != nil {
 		fatalf(logger, "invalid http server timeout config: %v", err)
 	}
-	telemetryShutdown, err := initTelemetry(rootCtx, otelEndpoint, otelServiceName)
+	telemetry, err := observability.InitTelemetry(rootCtx, otelEndpoint, otelServiceName)
 	if err != nil {
 		fatalf(logger, "failed to initialize telemetry: %v", err)
 	}
 	defer func() {
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		if shutdownErr := telemetryShutdown(shutdownCtx); shutdownErr != nil {
+		if shutdownErr := telemetry.Shutdown(shutdownCtx); shutdownErr != nil {
 			logger.ErrorWithContract(rootCtx, "app.telemetry.shutdown_failed", "main", "telemetry shutdown failed", shutdownErr, logging.ErrorContract{
 				Failure:        "telemetry_shutdown_failed",
 				Cause:          shutdownErr.Error(),
@@ -235,7 +230,7 @@ func main() {
 		// Handlers must treat all body/query/header values as untrusted input even behind the proxy.
 		Handler: httpapi.RequestIDMiddleware(httpapi.ForwardedHeaderMiddleware(
 			otelhttp.NewHandler(
-				httpapi.RecoveryMiddleware(logger, mux),
+				telemetry.HTTPMiddleware(httpapi.RecoveryMiddleware(logger, mux)),
 				"http.server",
 				otelhttp.WithSpanNameFormatter(func(_ string, r *http.Request) string {
 					_, pattern := mux.Handler(r)
@@ -277,29 +272,6 @@ func main() {
 		fatalf(logger, "server failed: %v", err)
 	}
 	logger.Info(rootCtx, "app.server.stopped", "main", "server stopped")
-}
-
-func initTelemetry(ctx context.Context, endpoint string, serviceName string) (func(context.Context) error, error) {
-	exporter, err := otlptracehttp.New(ctx, otlptracehttp.WithEndpointURL(endpoint))
-	if err != nil {
-		return nil, fmt.Errorf("build otlp exporter: %w", err)
-	}
-	res, err := resource.New(ctx, resource.WithAttributes(
-		semconv.ServiceName(serviceName),
-	))
-	if err != nil {
-		return nil, fmt.Errorf("build telemetry resource: %w", err)
-	}
-	tracerProvider := sdktrace.NewTracerProvider(
-		sdktrace.WithBatcher(exporter),
-		sdktrace.WithResource(res),
-	)
-	otel.SetTracerProvider(tracerProvider)
-	otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(
-		propagation.TraceContext{},
-		propagation.Baggage{},
-	))
-	return tracerProvider.Shutdown, nil
 }
 
 // fatalf logs a startup/runtime fatal error with an explicit error level and exits with status code 1.
