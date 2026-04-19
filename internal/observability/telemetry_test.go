@@ -321,6 +321,35 @@ func TestParseOTLPEndpoint(t *testing.T) {
 	}
 }
 
+func TestValidateNoInsecureOTLPEnv(t *testing.T) {
+	t.Run("allows https without insecure env", func(t *testing.T) {
+		if err := validateNoInsecureOTLPEnv(false); err != nil {
+			t.Fatalf("validateNoInsecureOTLPEnv(false) unexpected error = %v", err)
+		}
+	})
+
+	t.Run("rejects insecure env for https", func(t *testing.T) {
+		t.Setenv("OTEL_EXPORTER_OTLP_INSECURE", "true")
+		if err := validateNoInsecureOTLPEnv(false); err == nil {
+			t.Fatal("validateNoInsecureOTLPEnv(false) error = nil, want conflict error")
+		}
+	})
+
+	t.Run("rejects invalid boolean in insecure env", func(t *testing.T) {
+		t.Setenv("OTEL_EXPORTER_OTLP_TRACES_INSECURE", "maybe")
+		if err := validateNoInsecureOTLPEnv(false); err == nil {
+			t.Fatal("validateNoInsecureOTLPEnv(false) error = nil, want boolean parse error")
+		}
+	})
+
+	t.Run("allows insecure env for http endpoint", func(t *testing.T) {
+		t.Setenv("OTEL_EXPORTER_OTLP_LOGS_INSECURE", "true")
+		if err := validateNoInsecureOTLPEnv(true); err != nil {
+			t.Fatalf("validateNoInsecureOTLPEnv(true) unexpected error = %v", err)
+		}
+	})
+}
+
 func waitForInFlightRequestsValue(t *testing.T, ctx context.Context, reader *sdkmetric.ManualReader, method string, route string, want int64) int64 {
 	t.Helper()
 

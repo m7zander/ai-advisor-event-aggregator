@@ -2,12 +2,13 @@ package observability
 
 import (
 	"context"
-	"crypto/tls"
 	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
+	"os"
 	"path"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -96,6 +97,9 @@ func InitTelemetry(ctx context.Context, endpoint string, serviceName string) (*T
 	if err != nil {
 		return nil, fmt.Errorf("parse otlp endpoint: %w", err)
 	}
+	if err := validateNoInsecureOTLPEnv(useInsecureTransport); err != nil {
+		return nil, err
+	}
 
 	res, err := resource.New(ctx, resource.WithAttributes(semconv.ServiceName(serviceName)))
 	if err != nil {
@@ -108,8 +112,6 @@ func InitTelemetry(ctx context.Context, endpoint string, serviceName string) (*T
 	}
 	if useInsecureTransport {
 		traceOptions = append(traceOptions, otlptracehttp.WithInsecure())
-	} else {
-		traceOptions = append(traceOptions, otlptracehttp.WithTLSClientConfig(&tls.Config{}))
 	}
 	traceExporter, err := otlptracehttp.New(ctx, traceOptions...)
 	if err != nil {
@@ -124,8 +126,6 @@ func InitTelemetry(ctx context.Context, endpoint string, serviceName string) (*T
 	}
 	if useInsecureTransport {
 		metricOptions = append(metricOptions, otlpmetrichttp.WithInsecure())
-	} else {
-		metricOptions = append(metricOptions, otlpmetrichttp.WithTLSClientConfig(&tls.Config{}))
 	}
 	metricExporter, err := otlpmetrichttp.New(ctx, metricOptions...)
 	if err != nil {
@@ -143,8 +143,6 @@ func InitTelemetry(ctx context.Context, endpoint string, serviceName string) (*T
 	}
 	if useInsecureTransport {
 		logOptions = append(logOptions, otlploghttp.WithInsecure())
-	} else {
-		logOptions = append(logOptions, otlploghttp.WithTLSClientConfig(&tls.Config{}))
 	}
 	logExporter, err := otlploghttp.New(ctx, logOptions...)
 	if err != nil {
@@ -226,6 +224,34 @@ func joinOTLPPath(prefix string, signalPath string) string {
 		base = "/"
 	}
 	return path.Join(base, signalPath)
+}
+
+func validateNoInsecureOTLPEnv(useInsecureTransport bool) error {
+	if useInsecureTransport {
+		return nil
+	}
+
+	insecureVars := []string{
+		"OTEL_EXPORTER_OTLP_INSECURE",
+		"OTEL_EXPORTER_OTLP_TRACES_INSECURE",
+		"OTEL_EXPORTER_OTLP_METRICS_INSECURE",
+		"OTEL_EXPORTER_OTLP_LOGS_INSECURE",
+	}
+	for _, envName := range insecureVars {
+		rawValue := strings.TrimSpace(os.Getenv(envName))
+		if rawValue == "" {
+			continue
+		}
+		parsed, err := strconv.ParseBool(rawValue)
+		if err != nil {
+			return fmt.Errorf("%s must be a valid boolean when set, got %q", envName, rawValue)
+		}
+		if parsed {
+			return fmt.Errorf("%s=true conflicts with https OTLP endpoint; unset it or use http endpoint", envName)
+		}
+	}
+
+	return nil
 }
 
 func initHTTPMetrics(meter metric.Meter, inFlightCurrent *inFlightTracker) (
