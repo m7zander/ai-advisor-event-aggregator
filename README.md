@@ -126,8 +126,17 @@ Nicht im Scope:
   - `400` bei ungültigen Query-Parametern.
   - `500` bei internen Ladefehlern.
 
-Kompatibilitätshinweis:
-- Das Legacy-Feld `affected_security_count` wird in `GET /api/events` nicht mehr ausgeliefert. API-Consumer müssen dieses Feld entfernen und stattdessen direkt die Event-Objekte unter `events` verarbeiten.
+## Legacy-Status
+
+### Runtime aktiv
+
+- Aktiv sind ausschließlich die in diesem README dokumentierten Endpunkte (`/health`, `/api/health`, `/api/preprocess`, `/api/extract/run`, `/api/extract/run-batch`, `/api/extract/result`, `/api/events`).
+- Die Datenbankschema-Migration läuft ausschließlich über `internal/repository/extraction/repository.go` in `(*Repository).Migrate`.
+
+### Historische Referenz
+
+- Ehemalige Legacy-Endpunkte (z. B. `/api/events/{id}/securities`, `/api/securities/{symbol}/impacts`, `/api/universe*`) sind entfernt und nicht Teil der aktuellen öffentlichen API.
+- Historische SQL-Migrationen liegen ausschließlich als Compliance-Referenz im externen Archiv `compliance://event-aggregator/sql-legacy-archive/runtime-schema-cutover-2026-04-19/` und werden zur Laufzeit nicht ausgeführt.
 
 ## Validierung & Fehlerverhalten
 
