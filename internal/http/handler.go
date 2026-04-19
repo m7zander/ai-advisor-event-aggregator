@@ -94,7 +94,12 @@ func (h *Handler) Register(mux *http.ServeMux) {
 // It writes status directly to the response writer.
 func (h *Handler) health(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		h.respondError(r, w, "http.health.method_not_allowed", "http/health", "health check rejected request because HTTP method is not allowed", nil, logging.ErrorContract{
+			Failure:        "health_method_not_allowed",
+			Cause:          "method must be GET",
+			SanitizedInput: fmt.Sprintf(`{"method":%q,"path":%q}`, r.Method, r.URL.Path),
+			Reaction:       "returned http 405 method not allowed",
+		}, "method not allowed", http.StatusMethodNotAllowed, logging.Field{Key: "method", Value: r.Method}, logging.Field{Key: "path", Value: r.URL.Path})
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -125,12 +130,22 @@ func (h *Handler) health(w http.ResponseWriter, r *http.Request) {
 // Trust boundary: upstream payload is treated as external input and normalized by preprocess.Process.
 func (h *Handler) preprocess(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		h.respondError(r, w, "http.preprocess.method_not_allowed", "http/preprocess", "preprocess endpoint rejected request because HTTP method is not allowed", nil, logging.ErrorContract{
+			Failure:        "preprocess_method_not_allowed",
+			Cause:          "method must be GET",
+			SanitizedInput: fmt.Sprintf(`{"method":%q,"path":%q}`, r.Method, r.URL.Path),
+			Reaction:       "returned http 405 method not allowed",
+		}, "method not allowed", http.StatusMethodNotAllowed, logging.Field{Key: "method", Value: r.Method}, logging.Field{Key: "path", Value: r.URL.Path})
 		return
 	}
 	articles, err := h.upstreamClient.FetchArticles(r.Context())
 	if err != nil {
-		http.Error(w, "failed to fetch upstream articles", http.StatusBadGateway)
+		h.respondError(r, w, "http.preprocess.fetch_articles_failed", "http/preprocess", "preprocess failed to fetch upstream articles", err, logging.ErrorContract{
+			Failure:        "preprocess_fetch_articles_failed",
+			Cause:          err.Error(),
+			SanitizedInput: fmt.Sprintf(`{"method":%q,"path":%q}`, r.Method, r.URL.Path),
+			Reaction:       "returned http 502 bad gateway",
+		}, "failed to fetch upstream articles", http.StatusBadGateway, logging.Field{Key: "method", Value: r.Method}, logging.Field{Key: "path", Value: r.URL.Path})
 		return
 	}
 
@@ -154,7 +169,7 @@ func (h *Handler) preprocess(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	writeJSON(w, http.StatusOK, out)
+	writeJSON(r.Context(), h.logger, w, http.StatusOK, out, fmt.Sprintf(`{"method":%q,"path":%q}`, r.Method, r.URL.Path))
 }
 
 type runRequest struct {
@@ -178,39 +193,74 @@ func (h *Handler) extractRun(w http.ResponseWriter, r *http.Request) {
 	r = r.WithContext(ctx)
 
 	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		h.respondError(r, w, "http.extract_run.method_not_allowed", "http/extract/run", "single extraction run rejected request because HTTP method is not allowed", nil, logging.ErrorContract{
+			Failure:        "extract_run_method_not_allowed",
+			Cause:          "method must be POST",
+			SanitizedInput: fmt.Sprintf(`{"method":%q,"path":%q}`, r.Method, r.URL.Path),
+			Reaction:       "returned http 405 method not allowed",
+		}, "method not allowed", http.StatusMethodNotAllowed, logging.Field{Key: "method", Value: r.Method}, logging.Field{Key: "path", Value: r.URL.Path})
 		return
 	}
 	if h.extractor == nil || h.repo == nil || h.extractorModel == "" {
-		http.Error(w, "extraction dependencies not configured", http.StatusInternalServerError)
+		h.respondError(r, w, "http.extract_run.dependencies_missing", "http/extract/run", "single extraction run failed because extraction dependencies are not configured", nil, logging.ErrorContract{
+			Failure:        "extract_run_dependencies_missing",
+			Cause:          "extractor, repository, and model must be configured",
+			SanitizedInput: fmt.Sprintf(`{"method":%q,"path":%q}`, r.Method, r.URL.Path),
+			Reaction:       "returned http 500 internal server error",
+		}, "extraction dependencies not configured", http.StatusInternalServerError, logging.Field{Key: "method", Value: r.Method}, logging.Field{Key: "path", Value: r.URL.Path})
 		return
 	}
 
 	var req runRequest
 	if err := parseJSONBody(r, &req); err != nil {
-		http.Error(w, "invalid request body: "+err.Error(), http.StatusBadRequest)
+		h.respondError(r, w, "http.extract_run.invalid_request_body", "http/extract/run", "single extraction run rejected invalid JSON request body", err, logging.ErrorContract{
+			Failure:        "extract_run_invalid_request_body",
+			Cause:          err.Error(),
+			SanitizedInput: fmt.Sprintf(`{"method":%q,"path":%q}`, r.Method, r.URL.Path),
+			Reaction:       "returned http 400 bad request",
+		}, "invalid request body: "+err.Error(), http.StatusBadRequest, logging.Field{Key: "method", Value: r.Method}, logging.Field{Key: "path", Value: r.URL.Path})
 		return
 	}
 	if req.ArticleID <= 0 {
-		http.Error(w, "invalid request body: article_id must be greater than 0", http.StatusBadRequest)
+		h.respondError(r, w, "http.extract_run.invalid_article_id", "http/extract/run", "single extraction run rejected request because article_id is not greater than zero", nil, logging.ErrorContract{
+			Failure:        "extract_run_invalid_article_id",
+			Cause:          "article_id must be greater than 0",
+			SanitizedInput: fmt.Sprintf(`{"method":%q,"path":%q,"article_id":%d}`, r.Method, r.URL.Path, req.ArticleID),
+			Reaction:       "returned http 400 bad request",
+		}, "invalid request body: article_id must be greater than 0", http.StatusBadRequest, logging.Field{Key: "article_id", Value: req.ArticleID})
 		return
 	}
 
 	article, ok, err := h.findArticleByID(r.Context(), req.ArticleID)
 	if err != nil {
 		observability.RecordError(span, err)
-		http.Error(w, "failed to fetch upstream articles", http.StatusBadGateway)
+		h.respondError(r, w, "http.extract_run.fetch_articles_failed", "http/extract/run", "single extraction run failed to fetch upstream articles", err, logging.ErrorContract{
+			Failure:        "extract_run_fetch_articles_failed",
+			Cause:          err.Error(),
+			SanitizedInput: fmt.Sprintf(`{"method":%q,"path":%q,"article_id":%d}`, r.Method, r.URL.Path, req.ArticleID),
+			Reaction:       "returned http 502 bad gateway",
+		}, "failed to fetch upstream articles", http.StatusBadGateway, logging.Field{Key: "article_id", Value: req.ArticleID})
 		return
 	}
 	if !ok {
-		http.Error(w, "article not found", http.StatusNotFound)
+		h.respondError(r, w, "http.extract_run.article_not_found", "http/extract/run", "single extraction run failed because requested article was not found", nil, logging.ErrorContract{
+			Failure:        "extract_run_article_not_found",
+			Cause:          "article_id was not present in upstream articles",
+			SanitizedInput: fmt.Sprintf(`{"method":%q,"path":%q,"article_id":%d}`, r.Method, r.URL.Path, req.ArticleID),
+			Reaction:       "returned http 404 not found",
+		}, "article not found", http.StatusNotFound, logging.Field{Key: "article_id", Value: req.ArticleID})
 		return
 	}
 
 	appArticle, err := appextraction.FromModelArticle(article)
 	if err != nil {
 		observability.RecordError(span, err)
-		http.Error(w, "invalid article data", http.StatusInternalServerError)
+		h.respondError(r, w, "http.extract_run.article_conversion_failed", "http/extract/run", "single extraction run failed to convert upstream article into extraction input", err, logging.ErrorContract{
+			Failure:        "extract_run_article_conversion_failed",
+			Cause:          err.Error(),
+			SanitizedInput: fmt.Sprintf(`{"method":%q,"path":%q,"article_id":%d}`, r.Method, r.URL.Path, req.ArticleID),
+			Reaction:       "returned http 500 internal server error",
+		}, "invalid article data", http.StatusInternalServerError, logging.Field{Key: "article_id", Value: req.ArticleID})
 		return
 	}
 
@@ -231,14 +281,14 @@ func (h *Handler) extractRun(w http.ResponseWriter, r *http.Request) {
 			},
 			logging.Field{Key: "article_id", Value: req.ArticleID},
 		)
-		writeJSON(w, http.StatusOK, runResponse{ArticleID: req.ArticleID, Status: "failed", Error: "extraction run failed"})
+		writeJSON(r.Context(), h.logger, w, http.StatusOK, runResponse{ArticleID: req.ArticleID, Status: "failed", Error: "extraction run failed"}, fmt.Sprintf(`{"method":%q,"path":%q,"article_id":%d}`, r.Method, r.URL.Path, req.ArticleID))
 		return
 	}
 	status := string(outcome.Outcome)
 	if status == "" {
 		status = "failed"
 	}
-	writeJSON(w, http.StatusOK, runResponse{ArticleID: req.ArticleID, Status: status, Result: outcome.Result, Error: outcome.Error})
+	writeJSON(r.Context(), h.logger, w, http.StatusOK, runResponse{ArticleID: req.ArticleID, Status: status, Result: outcome.Result, Error: outcome.Error}, fmt.Sprintf(`{"method":%q,"path":%q,"article_id":%d}`, r.Method, r.URL.Path, req.ArticleID))
 }
 
 type batchRunRequest struct {
@@ -263,32 +313,62 @@ func (h *Handler) extractRunBatch(w http.ResponseWriter, r *http.Request) {
 	r = r.WithContext(ctx)
 
 	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		h.respondError(r, w, "http.extract_run_batch.method_not_allowed", "http/extract/run-batch", "batch extraction run rejected request because HTTP method is not allowed", nil, logging.ErrorContract{
+			Failure:        "extract_run_batch_method_not_allowed",
+			Cause:          "method must be POST",
+			SanitizedInput: fmt.Sprintf(`{"method":%q,"path":%q}`, r.Method, r.URL.Path),
+			Reaction:       "returned http 405 method not allowed",
+		}, "method not allowed", http.StatusMethodNotAllowed, logging.Field{Key: "method", Value: r.Method}, logging.Field{Key: "path", Value: r.URL.Path})
 		return
 	}
 	if h.extractor == nil || h.repo == nil || h.extractorModel == "" {
-		http.Error(w, "extraction dependencies not configured", http.StatusInternalServerError)
+		h.respondError(r, w, "http.extract_run_batch.dependencies_missing", "http/extract/run-batch", "batch extraction run failed because extraction dependencies are not configured", nil, logging.ErrorContract{
+			Failure:        "extract_run_batch_dependencies_missing",
+			Cause:          "extractor, repository, and model must be configured",
+			SanitizedInput: fmt.Sprintf(`{"method":%q,"path":%q}`, r.Method, r.URL.Path),
+			Reaction:       "returned http 500 internal server error",
+		}, "extraction dependencies not configured", http.StatusInternalServerError, logging.Field{Key: "method", Value: r.Method}, logging.Field{Key: "path", Value: r.URL.Path})
 		return
 	}
 
 	var req batchRunRequest
 	if err := parseJSONBody(r, &req); err != nil {
-		http.Error(w, "invalid request body: "+err.Error(), http.StatusBadRequest)
+		h.respondError(r, w, "http.extract_run_batch.invalid_request_body", "http/extract/run-batch", "batch extraction run rejected invalid JSON request body", err, logging.ErrorContract{
+			Failure:        "extract_run_batch_invalid_request_body",
+			Cause:          err.Error(),
+			SanitizedInput: fmt.Sprintf(`{"method":%q,"path":%q}`, r.Method, r.URL.Path),
+			Reaction:       "returned http 400 bad request",
+		}, "invalid request body: "+err.Error(), http.StatusBadRequest, logging.Field{Key: "method", Value: r.Method}, logging.Field{Key: "path", Value: r.URL.Path})
 		return
 	}
 	if len(req.ArticleIDs) == 0 {
-		http.Error(w, "invalid request body: article_ids must not be empty", http.StatusBadRequest)
+		h.respondError(r, w, "http.extract_run_batch.empty_article_ids", "http/extract/run-batch", "batch extraction run rejected request because article_ids is empty", nil, logging.ErrorContract{
+			Failure:        "extract_run_batch_empty_article_ids",
+			Cause:          "article_ids must not be empty",
+			SanitizedInput: fmt.Sprintf(`{"method":%q,"path":%q,"article_ids_count":%d}`, r.Method, r.URL.Path, len(req.ArticleIDs)),
+			Reaction:       "returned http 400 bad request",
+		}, "invalid request body: article_ids must not be empty", http.StatusBadRequest, logging.Field{Key: "article_ids_count", Value: len(req.ArticleIDs)})
 		return
 	}
 	if req.Concurrency < 0 {
-		http.Error(w, "invalid concurrency", http.StatusBadRequest)
+		h.respondError(r, w, "http.extract_run_batch.invalid_concurrency", "http/extract/run-batch", "batch extraction run rejected request because concurrency is negative", nil, logging.ErrorContract{
+			Failure:        "extract_run_batch_invalid_concurrency",
+			Cause:          "concurrency must be greater than or equal to 0",
+			SanitizedInput: fmt.Sprintf(`{"method":%q,"path":%q,"concurrency":%d}`, r.Method, r.URL.Path, req.Concurrency),
+			Reaction:       "returned http 400 bad request",
+		}, "invalid concurrency", http.StatusBadRequest, logging.Field{Key: "concurrency", Value: req.Concurrency})
 		return
 	}
 
 	articles, err := h.upstreamClient.FetchArticles(r.Context())
 	if err != nil {
 		observability.RecordError(span, err)
-		http.Error(w, "failed to fetch upstream articles", http.StatusBadGateway)
+		h.respondError(r, w, "http.extract_run_batch.fetch_articles_failed", "http/extract/run-batch", "batch extraction run failed to fetch upstream articles", err, logging.ErrorContract{
+			Failure:        "extract_run_batch_fetch_articles_failed",
+			Cause:          err.Error(),
+			SanitizedInput: fmt.Sprintf(`{"method":%q,"path":%q,"article_ids_count":%d,"concurrency":%d}`, r.Method, r.URL.Path, len(req.ArticleIDs), req.Concurrency),
+			Reaction:       "returned http 502 bad gateway",
+		}, "failed to fetch upstream articles", http.StatusBadGateway, logging.Field{Key: "article_ids_count", Value: len(req.ArticleIDs)}, logging.Field{Key: "concurrency", Value: req.Concurrency})
 		return
 	}
 	articleByID := make(map[int64]model.Article, len(articles))
@@ -338,7 +418,12 @@ func (h *Handler) extractRunBatch(w http.ResponseWriter, r *http.Request) {
 		)
 		if batchErr != nil {
 			observability.RecordError(span, batchErr)
-			http.Error(w, "failed to run extraction batch", http.StatusInternalServerError)
+			h.respondError(r, w, "http.extract_run_batch.execution_failed", "http/extract/run-batch", "batch extraction run failed during execution", batchErr, logging.ErrorContract{
+				Failure:        "extract_run_batch_execution_failed",
+				Cause:          batchErr.Error(),
+				SanitizedInput: fmt.Sprintf(`{"method":%q,"path":%q,"article_ids_count":%d,"concurrency":%d}`, r.Method, r.URL.Path, len(req.ArticleIDs), req.Concurrency),
+				Reaction:       "returned http 500 internal server error",
+			}, "failed to run extraction batch", http.StatusInternalServerError, logging.Field{Key: "article_ids_count", Value: len(req.ArticleIDs)}, logging.Field{Key: "concurrency", Value: req.Concurrency})
 			return
 		}
 		for _, item := range batchResult.Items {
@@ -368,7 +453,7 @@ func (h *Handler) extractRunBatch(w http.ResponseWriter, r *http.Request) {
 			resp.Failed++
 		}
 	}
-	writeJSON(w, http.StatusOK, resp)
+	writeJSON(r.Context(), h.logger, w, http.StatusOK, resp, fmt.Sprintf(`{"method":%q,"path":%q,"article_ids_count":%d,"concurrency":%d}`, r.Method, r.URL.Path, len(req.ArticleIDs), req.Concurrency))
 }
 
 type readResultResponse struct {
@@ -395,30 +480,60 @@ type readResultResponse struct {
 // Sanitization: query article_id is strictly parsed as positive base-10 int64.
 func (h *Handler) extractResult(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		h.respondError(r, w, "http.extract_result.method_not_allowed", "http/extract/result", "extract result endpoint rejected request because HTTP method is not allowed", nil, logging.ErrorContract{
+			Failure:        "extract_result_method_not_allowed",
+			Cause:          "method must be GET",
+			SanitizedInput: fmt.Sprintf(`{"method":%q,"path":%q}`, r.Method, r.URL.Path),
+			Reaction:       "returned http 405 method not allowed",
+		}, "method not allowed", http.StatusMethodNotAllowed, logging.Field{Key: "method", Value: r.Method}, logging.Field{Key: "path", Value: r.URL.Path})
 		return
 	}
 	if h.repo == nil {
-		http.Error(w, "extraction repository not configured", http.StatusInternalServerError)
+		h.respondError(r, w, "http.extract_result.repository_missing", "http/extract/result", "extract result endpoint failed because repository dependency is not configured", nil, logging.ErrorContract{
+			Failure:        "extract_result_repository_missing",
+			Cause:          "repository must be configured",
+			SanitizedInput: fmt.Sprintf(`{"method":%q,"path":%q}`, r.Method, r.URL.Path),
+			Reaction:       "returned http 500 internal server error",
+		}, "extraction repository not configured", http.StatusInternalServerError, logging.Field{Key: "method", Value: r.Method}, logging.Field{Key: "path", Value: r.URL.Path})
 		return
 	}
-	id, err := strconv.ParseInt(r.URL.Query().Get("article_id"), 10, 64)
+	rawArticleID := r.URL.Query().Get("article_id")
+	id, err := strconv.ParseInt(rawArticleID, 10, 64)
 	if err != nil || id <= 0 {
-		http.Error(w, "invalid article_id", http.StatusBadRequest)
+		cause := "article_id must be a positive base-10 integer"
+		if err != nil {
+			cause = err.Error()
+		}
+		h.respondError(r, w, "http.extract_result.invalid_article_id", "http/extract/result", "extract result endpoint rejected request because article_id is invalid", err, logging.ErrorContract{
+			Failure:        "extract_result_invalid_article_id",
+			Cause:          cause,
+			SanitizedInput: fmt.Sprintf(`{"method":%q,"path":%q,"article_id":%q}`, r.Method, r.URL.Path, rawArticleID),
+			Reaction:       "returned http 400 bad request",
+		}, "invalid article_id", http.StatusBadRequest, logging.Field{Key: "article_id", Value: rawArticleID})
 		return
 	}
 
 	rec, err := h.repo.GetByArticleID(r.Context(), id)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			http.Error(w, "article result not found", http.StatusNotFound)
+			h.respondError(r, w, "http.extract_result.not_found", "http/extract/result", "extract result endpoint did not find persisted article result", err, logging.ErrorContract{
+				Failure:        "extract_result_not_found",
+				Cause:          err.Error(),
+				SanitizedInput: fmt.Sprintf(`{"method":%q,"path":%q,"article_id":%d}`, r.Method, r.URL.Path, id),
+				Reaction:       "returned http 404 not found",
+			}, "article result not found", http.StatusNotFound, logging.Field{Key: "article_id", Value: id})
 			return
 		}
-		http.Error(w, "failed to load extraction result", http.StatusInternalServerError)
+		h.respondError(r, w, "http.extract_result.load_failed", "http/extract/result", "extract result endpoint failed while loading persisted article result", err, logging.ErrorContract{
+			Failure:        "extract_result_load_failed",
+			Cause:          err.Error(),
+			SanitizedInput: fmt.Sprintf(`{"method":%q,"path":%q,"article_id":%d}`, r.Method, r.URL.Path, id),
+			Reaction:       "returned http 500 internal server error",
+		}, "failed to load extraction result", http.StatusInternalServerError, logging.Field{Key: "article_id", Value: id})
 		return
 	}
 
-	writeJSON(w, http.StatusOK, readResultResponse{
+	writeJSON(r.Context(), h.logger, w, http.StatusOK, readResultResponse{
 		ArticleID:                rec.ArticleID,
 		ExtractionStatus:         rec.ExtractionStatus,
 		ExtractionModel:          rec.ExtractionModel,
@@ -434,7 +549,7 @@ func (h *Handler) extractResult(w http.ResponseWriter, r *http.Request) {
 		ExtractedChannels:        rec.ExtractedChannels,
 		ExtractedTimeHorizon:     rec.ExtractedTimeHorizon,
 		ExtractedConfidence:      rec.ExtractedConfidence,
-	})
+	}, fmt.Sprintf(`{"method":%q,"path":%q,"article_id":%d}`, r.Method, r.URL.Path, id))
 }
 
 // listEvents returns aggregated persistent events sorted by recency.
@@ -447,18 +562,37 @@ func (h *Handler) listEvents(w http.ResponseWriter, r *http.Request) {
 	r = r.WithContext(ctx)
 
 	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		h.respondError(r, w, "http.events.method_not_allowed", "http/events", "events endpoint rejected request because HTTP method is not allowed", nil, logging.ErrorContract{
+			Failure:        "events_method_not_allowed",
+			Cause:          "method must be GET",
+			SanitizedInput: fmt.Sprintf(`{"method":%q,"path":%q}`, r.Method, r.URL.Path),
+			Reaction:       "returned http 405 method not allowed",
+		}, "method not allowed", http.StatusMethodNotAllowed, logging.Field{Key: "method", Value: r.Method}, logging.Field{Key: "path", Value: r.URL.Path})
 		return
 	}
 	if h.clusterService == nil {
-		http.Error(w, "clustering service not configured", http.StatusInternalServerError)
+		h.respondError(r, w, "http.events.service_missing", "http/events", "events endpoint failed because clustering service dependency is not configured", nil, logging.ErrorContract{
+			Failure:        "events_service_missing",
+			Cause:          "clustering service must be configured",
+			SanitizedInput: fmt.Sprintf(`{"method":%q,"path":%q}`, r.Method, r.URL.Path),
+			Reaction:       "returned http 500 internal server error",
+		}, "clustering service not configured", http.StatusInternalServerError, logging.Field{Key: "method", Value: r.Method}, logging.Field{Key: "path", Value: r.URL.Path})
 		return
 	}
 	limit := 20
 	if rawLimit := r.URL.Query().Get("limit"); rawLimit != "" {
 		parsed, err := strconv.Atoi(rawLimit)
 		if err != nil || parsed <= 0 {
-			http.Error(w, "invalid limit", http.StatusBadRequest)
+			cause := "limit must be a positive integer"
+			if err != nil {
+				cause = err.Error()
+			}
+			h.respondError(r, w, "http.events.invalid_limit", "http/events", "events endpoint rejected request because limit query parameter is invalid", err, logging.ErrorContract{
+				Failure:        "events_invalid_limit",
+				Cause:          cause,
+				SanitizedInput: fmt.Sprintf(`{"method":%q,"path":%q,"limit":%q}`, r.Method, r.URL.Path, rawLimit),
+				Reaction:       "returned http 400 bad request",
+			}, "invalid limit", http.StatusBadRequest, logging.Field{Key: "limit", Value: rawLimit})
 			return
 		}
 		limit = parsed
@@ -468,7 +602,12 @@ func (h *Handler) listEvents(w http.ResponseWriter, r *http.Request) {
 	if rawSince := r.URL.Query().Get("since"); rawSince != "" {
 		since, err := time.Parse(time.RFC3339, rawSince)
 		if err != nil {
-			http.Error(w, "invalid since", http.StatusBadRequest)
+			h.respondError(r, w, "http.events.invalid_since", "http/events", "events endpoint rejected request because since query parameter is not valid RFC3339", err, logging.ErrorContract{
+				Failure:        "events_invalid_since",
+				Cause:          err.Error(),
+				SanitizedInput: fmt.Sprintf(`{"method":%q,"path":%q,"limit":%d,"since":%q}`, r.Method, r.URL.Path, limit, rawSince),
+				Reaction:       "returned http 400 bad request",
+			}, "invalid since", http.StatusBadRequest, logging.Field{Key: "since", Value: rawSince}, logging.Field{Key: "limit", Value: limit})
 			return
 		}
 		since = since.UTC()
@@ -478,7 +617,12 @@ func (h *Handler) listEvents(w http.ResponseWriter, r *http.Request) {
 	if rawUntil := r.URL.Query().Get("until"); rawUntil != "" {
 		until, err := time.Parse(time.RFC3339, rawUntil)
 		if err != nil {
-			http.Error(w, "invalid until", http.StatusBadRequest)
+			h.respondError(r, w, "http.events.invalid_until", "http/events", "events endpoint rejected request because until query parameter is not valid RFC3339", err, logging.ErrorContract{
+				Failure:        "events_invalid_until",
+				Cause:          err.Error(),
+				SanitizedInput: fmt.Sprintf(`{"method":%q,"path":%q,"limit":%d,"until":%q}`, r.Method, r.URL.Path, limit, rawUntil),
+				Reaction:       "returned http 400 bad request",
+			}, "invalid until", http.StatusBadRequest, logging.Field{Key: "until", Value: rawUntil}, logging.Field{Key: "limit", Value: limit})
 			return
 		}
 		until = until.UTC()
@@ -501,7 +645,7 @@ func (h *Handler) listEvents(w http.ResponseWriter, r *http.Request) {
 		logging.Field{Key: "limit", Value: limit},
 		logging.Field{Key: "returned", Value: len(events)},
 	)
-	writeJSON(w, http.StatusOK, map[string]any{"limit": limit, "since": sincePtr, "until": untilPtr, "events": events})
+	writeJSON(r.Context(), h.logger, w, http.StatusOK, map[string]any{"limit": limit, "since": sincePtr, "until": untilPtr, "events": events}, fmt.Sprintf(`{"method":%q,"path":%q,"limit":%d}`, r.Method, r.URL.Path, limit))
 }
 
 // findArticleByID fetches upstream articles and returns one matching ID.
@@ -540,11 +684,26 @@ func parseJSONBody(r *http.Request, target any) error {
 // writeJSON writes a JSON response with the provided HTTP status code and payload.
 // Parameters: w is the target response writer, code is HTTP status, payload is JSON-encoded body value.
 // It writes an internal error status if encoding fails.
-func writeJSON(w http.ResponseWriter, code int, payload any) {
+func writeJSON(ctx context.Context, logger *logging.Logger, w http.ResponseWriter, code int, payload any, sanitizedInput string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
 	if err := json.NewEncoder(w).Encode(payload); err != nil {
+		if logger != nil {
+			logger.ErrorWithContract(ctx, "http.response.write_json_failed", "http/response", "failed to encode HTTP JSON response payload", err, logging.ErrorContract{
+				Failure:        "write_json_encode_failed",
+				Cause:          err.Error(),
+				SanitizedInput: sanitizedInput,
+				Reaction:       "attempted to return internal server error response",
+			}, logging.Field{Key: "status_code", Value: code})
+		}
 		http.Error(w, "failed to encode response", http.StatusInternalServerError)
 		return
 	}
+}
+
+func (h *Handler) respondError(r *http.Request, w http.ResponseWriter, event string, component string, message string, err error, contract logging.ErrorContract, clientMessage string, status int, fields ...logging.Field) {
+	if h != nil && h.logger != nil {
+		h.logger.ErrorWithContract(r.Context(), event, component, message, err, contract, fields...)
+	}
+	http.Error(w, clientMessage, status)
 }
