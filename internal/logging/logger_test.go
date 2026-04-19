@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"math"
 	"strings"
 	"testing"
 
@@ -142,6 +143,30 @@ func TestLoggerErrorWithContractIncludesMandatoryFields(t *testing.T) {
 	}
 	if entry["reaction"] != "returned 500" {
 		t.Fatalf("unexpected reaction: %v", entry["reaction"])
+	}
+}
+
+func TestLoggerMarshalFailureFallbackPreservesRequestID(t *testing.T) {
+	var stderr bytes.Buffer
+	logger := NewWithWriters(&bytes.Buffer{}, &stderr)
+
+	ctx := WithRequestID(context.Background(), "req-marshal-fail")
+	logger.Error(ctx, "http.events.failed", "http/events", "operation failed", nil, Field{Key: "invalid", Value: math.NaN()})
+
+	raw := strings.TrimSpace(stderr.String())
+	if !strings.HasPrefix(raw, `{"message":"failed to marshal log entry"`) {
+		t.Fatalf("unexpected fallback log output: %s", raw)
+	}
+
+	var entry map[string]any
+	if err := json.Unmarshal([]byte(raw), &entry); err != nil {
+		t.Fatalf("decode fallback error log: %v", err)
+	}
+	if entry["request_id"] != "req-marshal-fail" {
+		t.Fatalf("expected request_id to be preserved, got: %v", entry["request_id"])
+	}
+	if entry["level"] != "error" {
+		t.Fatalf("unexpected level: %v", entry["level"])
 	}
 }
 

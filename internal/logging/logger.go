@@ -115,8 +115,9 @@ func (l *Logger) emit(out *log.Logger, level string, event string, msg string, c
 
 	encoded, err := json.Marshal(entry)
 	if err != nil {
-		out.Printf(`{"message":"failed to marshal log entry","timestamp":"%s","level":"error","request_id":"","component":"internal/logging","error":%q}`,
+		out.Printf(`{"message":"failed to marshal log entry","timestamp":"%s","level":"error","request_id":%q,"component":"internal/logging","error":%q}`,
 			time.Now().UTC().Format(time.RFC3339Nano),
+			RequestIDFromContext(ctx),
 			fmt.Sprintf("%v", err))
 		return
 	}
