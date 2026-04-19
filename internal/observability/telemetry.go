@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"sync/atomic"
 	"time"
 
 	"go.opentelemetry.io/otel"
@@ -26,7 +27,8 @@ type Telemetry struct {
 	requestCount      metric.Int64Counter
 	requestDurationMS metric.Float64Histogram
 	errorCount        metric.Int64Counter
-	inFlightRequests  metric.Int64UpDownCounter
+	inFlightRequests  metric.Int64ObservableGauge
+	inFlightCurrent   *atomic.Int64
 	shutdownFns       []func(context.Context) error
 }
 
@@ -69,21 +71,10 @@ func InitTelemetry(ctx context.Context, endpoint string, serviceName string) (*T
 	))
 
 	meter := otel.Meter("ai-advisor-event-aggregator/http")
-	requestCount, err := meter.Int64Counter("request_count")
+	inFlightCurrent := &atomic.Int64{}
+	requestCount, requestDurationMS, errorCount, inFlightRequests, inFlightRegistration, err := initHTTPMetrics(meter, inFlightCurrent)
 	if err != nil {
-		return nil, fmt.Errorf("create request_count metric: %w", err)
-	}
-	requestDurationMS, err := meter.Float64Histogram("request_duration_ms", metric.WithUnit("ms"))
-	if err != nil {
-		return nil, fmt.Errorf("create request_duration_ms metric: %w", err)
-	}
-	errorCount, err := meter.Int64Counter("error_count")
-	if err != nil {
-		return nil, fmt.Errorf("create error_count metric: %w", err)
-	}
-	inFlightRequests, err := meter.Int64UpDownCounter("in_flight_requests")
-	if err != nil {
-		return nil, fmt.Errorf("create in_flight_requests metric: %w", err)
+		return nil, err
 	}
 
 	return &Telemetry{
@@ -91,12 +82,55 @@ func InitTelemetry(ctx context.Context, endpoint string, serviceName string) (*T
 		requestDurationMS: requestDurationMS,
 		errorCount:        errorCount,
 		inFlightRequests:  inFlightRequests,
+		inFlightCurrent:   inFlightCurrent,
 		shutdownFns: []func(context.Context) error{
+			func(context.Context) error {
+				return inFlightRegistration.Unregister()
+			},
 			logProvider.Shutdown,
 			metricProvider.Shutdown,
 			traceProvider.Shutdown,
 		},
 	}, nil
+}
+
+func initHTTPMetrics(meter metric.Meter, inFlightCurrent *atomic.Int64) (
+	metric.Int64Counter,
+	metric.Float64Histogram,
+	metric.Int64Counter,
+	metric.Int64ObservableGauge,
+	metric.Registration,
+	error,
+) {
+	requestCount, err := meter.Int64Counter("request_count")
+	if err != nil {
+		return nil, nil, nil, nil, nil, fmt.Errorf("create request_count metric: %w", err)
+	}
+	requestDurationMS, err := meter.Float64Histogram("request_duration_ms", metric.WithUnit("ms"))
+	if err != nil {
+		return nil, nil, nil, nil, nil, fmt.Errorf("create request_duration_ms metric: %w", err)
+	}
+	errorCount, err := meter.Int64Counter("error_count")
+	if err != nil {
+		return nil, nil, nil, nil, nil, fmt.Errorf("create error_count metric: %w", err)
+	}
+	inFlightRequests, err := meter.Int64ObservableGauge("in_flight_requests")
+	if err != nil {
+		return nil, nil, nil, nil, nil, fmt.Errorf("create in_flight_requests metric: %w", err)
+	}
+
+	inFlightRegistration, err := meter.RegisterCallback(
+		func(ctx context.Context, observer metric.Observer) error {
+			observer.ObserveInt64(inFlightRequests, inFlightCurrent.Load())
+			return nil
+		},
+		inFlightRequests,
+	)
+	if err != nil {
+		return nil, nil, nil, nil, nil, fmt.Errorf("register in_flight_requests callback: %w", err)
+	}
+
+	return requestCount, requestDurationMS, errorCount, inFlightRequests, inFlightRegistration, nil
 }
 
 func (t *Telemetry) Shutdown(ctx context.Context) error {
@@ -126,8 +160,10 @@ func (t *Telemetry) HTTPMiddleware(next http.Handler) http.Handler {
 			attribute.String("http.route", route),
 		}
 		start := time.Now()
-		t.inFlightRequests.Add(r.Context(), 1, metric.WithAttributes(attrs...))
-		defer t.inFlightRequests.Add(r.Context(), -1, metric.WithAttributes(attrs...))
+		if t.inFlightCurrent != nil {
+			t.inFlightCurrent.Add(1)
+			defer t.inFlightCurrent.Add(-1)
+		}
 
 		recorder := &statusRecorder{ResponseWriter: w, statusCode: http.StatusOK}
 		defer func() {
