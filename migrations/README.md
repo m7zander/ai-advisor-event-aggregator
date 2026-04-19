@@ -32,7 +32,14 @@ Alle historischen SQL-Dateien wurden nach `migrations/legacy_archive/` verschobe
 - `legacy_archive/000008_rename_legacy_tables_with_service_prefix.sql`
 - `legacy_archive/000009_decommission_legacy_impact_tables.sql`
 
-Diese Dateien sind **nicht** Teil des produktiven Runtime-Migrationsmechanismus und werden beim Startup **niemals** ausgeführt.
+### Verbindliche Abgrenzung
+
+`migrations/legacy_archive/*.sql` ist ein **reines Audit-/Compliance-Archiv**.
+
+- Diese Dateien sind **nicht Teil des Runtime-Migrationspfads**.
+- Diese Dateien werden beim Startup **niemals** geladen oder ausgeführt.
+- Die **einzige** aktive Migrationseintrittsstelle im Service ist:
+  - `internal/repository/extraction/repository.go` → `(*Repository).Migrate`
 
 ## Rollout-Hinweise für bestehende Alt-DBs
 
