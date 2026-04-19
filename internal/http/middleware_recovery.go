@@ -3,7 +3,6 @@ package httpapi
 import (
 	"bufio"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -68,7 +67,7 @@ func isAbortHandlerPanic(recovered any) bool {
 	if !ok {
 		return false
 	}
-	return errors.Is(errValue, http.ErrAbortHandler)
+	return errValue == http.ErrAbortHandler
 }
 func sanitizedRequestInput(r *http.Request) string {
 	if r == nil {

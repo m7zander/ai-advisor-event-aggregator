@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -132,6 +133,32 @@ func TestRecoveryMiddleware_DownstreamErrAbortHandlerPreservesSentinelSemantics(
 
 	h.ServeHTTP(rw, req)
 	t.Fatal("expected panic with http.ErrAbortHandler")
+}
+
+func TestRecoveryMiddleware_WrappedErrAbortHandlerIsHandledAsApplicationPanic(t *testing.T) {
+	var stderr bytes.Buffer
+	logger := logging.NewWithWriters(&bytes.Buffer{}, &stderr)
+
+	h := RecoveryMiddleware(logger, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		panic(fmt.Errorf("wrapped abort sentinel: %w", http.ErrAbortHandler))
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/abort-wrapped", nil)
+	req = req.WithContext(withRequestContextIDs(req.Context(), "req-abort-wrapped", trace.TraceID{15}, trace.SpanID{16}))
+	rw := httptest.NewRecorder()
+
+	h.ServeHTTP(rw, req)
+
+	if rw.Code != http.StatusInternalServerError {
+		t.Fatalf("status=%d, want %d", rw.Code, http.StatusInternalServerError)
+	}
+	entry := parseSingleJSONLogLine(t, stderr.String())
+	if entry["failure"] != "handler_panic" {
+		t.Fatalf("failure=%v, want handler_panic", entry["failure"])
+	}
+	if entry["reaction"] != "returned safe 500 response" {
+		t.Fatalf("reaction=%v, want safe 500 reaction", entry["reaction"])
+	}
 }
 
 func TestRecoveryMiddleware_PanicAfterReadFromEmptyReaderReturnsSafe500(t *testing.T) {
