@@ -7,7 +7,6 @@ import (
 	"io"
 	"log"
 	"os"
-	"sort"
 	"strings"
 	"time"
 
@@ -91,44 +90,79 @@ func (l *Logger) emit(out *log.Logger, level string, event string, msg string, c
 	if l == nil || out == nil {
 		return
 	}
-	entry := map[string]any{
-		"ts":         time.Now().UTC().Format(time.RFC3339Nano),
-		"level":      level,
-		"event":      strings.TrimSpace(event),
-		"msg":        msg,
-		"request_id": RequestIDFromContext(ctx),
-		"component":  component,
-	}
+	entry := newOrderedJSON()
+	entry.add("message", msg)
+	entry.add("timestamp", time.Now().UTC().Format(time.RFC3339Nano))
+	entry.add("level", level)
+	entry.add("request_id", RequestIDFromContext(ctx))
+
 	if spanCtx := trace.SpanContextFromContext(ctx); spanCtx.IsValid() {
-		entry["trace_id"] = spanCtx.TraceID().String()
-		entry["span_id"] = spanCtx.SpanID().String()
+		entry.add("trace_id", spanCtx.TraceID().String())
+		entry.add("span_id", spanCtx.SpanID().String())
 	}
+	entry.add("event", strings.TrimSpace(event))
+	entry.add("component", component)
 	if errText != "" {
-		entry["error"] = errText
+		entry.add("error", errText)
 	}
 	for _, field := range fields {
 		key := strings.TrimSpace(field.Key)
 		if key == "" {
 			continue
 		}
-		entry[key] = field.Value
+		entry.add(key, field.Value)
 	}
 
-	keys := make([]string, 0, len(entry))
-	for k := range entry {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	ordered := make(map[string]any, len(entry))
-	for _, key := range keys {
-		ordered[key] = entry[key]
-	}
-
-	encoded, err := json.Marshal(ordered)
+	encoded, err := json.Marshal(entry)
 	if err != nil {
-		out.Printf(`{"level":"error","msg":"failed to marshal log entry","component":"internal/logging","error":%q}`,
+		out.Printf(`{"message":"failed to marshal log entry","timestamp":"%s","level":"error","request_id":"","component":"internal/logging","error":%q}`,
+			time.Now().UTC().Format(time.RFC3339Nano),
 			fmt.Sprintf("%v", err))
 		return
 	}
 	out.Println(string(encoded))
+}
+
+type orderedJSON struct {
+	pairs []Field
+	index map[string]int
+}
+
+func newOrderedJSON() *orderedJSON {
+	return &orderedJSON{
+		pairs: make([]Field, 0, 8),
+		index: make(map[string]int),
+	}
+}
+
+func (o *orderedJSON) add(key string, value any) {
+	if idx, exists := o.index[key]; exists {
+		o.pairs[idx].Value = value
+		return
+	}
+	o.index[key] = len(o.pairs)
+	o.pairs = append(o.pairs, Field{Key: key, Value: value})
+}
+
+func (o *orderedJSON) MarshalJSON() ([]byte, error) {
+	var builder strings.Builder
+	builder.WriteByte('{')
+	for i, pair := range o.pairs {
+		if i > 0 {
+			builder.WriteByte(',')
+		}
+		keyEncoded, err := json.Marshal(pair.Key)
+		if err != nil {
+			return nil, err
+		}
+		valueEncoded, err := json.Marshal(pair.Value)
+		if err != nil {
+			return nil, err
+		}
+		builder.Write(keyEncoded)
+		builder.WriteByte(':')
+		builder.Write(valueEncoded)
+	}
+	builder.WriteByte('}')
+	return []byte(builder.String()), nil
 }
