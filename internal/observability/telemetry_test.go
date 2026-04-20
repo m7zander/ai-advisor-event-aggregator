@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -227,6 +228,140 @@ func TestTelemetryShutdownRunsFunctionsInDeclaredOrder(t *testing.T) {
 			t.Fatalf("shutdown order[%d] = %q, want %q", i, order[i], want[i])
 		}
 	}
+}
+
+func TestParseOTLPEndpoint(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		endpoint     string
+		wantHost     string
+		wantInsecure bool
+		wantPath     string
+		wantErr      string
+	}{
+		{
+			name:         "http endpoint",
+			endpoint:     "http://collector.internal:4318",
+			wantHost:     "collector.internal:4318",
+			wantInsecure: true,
+			wantPath:     "/",
+		},
+		{
+			name:         "https endpoint",
+			endpoint:     "https://collector.example.com:4318",
+			wantHost:     "collector.example.com:4318",
+			wantInsecure: false,
+			wantPath:     "/",
+		},
+		{
+			name:         "path prefix allowed",
+			endpoint:     "https://collector.example.com/otel",
+			wantHost:     "collector.example.com",
+			wantInsecure: false,
+			wantPath:     "/otel",
+		},
+		{
+			name:     "signal path rejected",
+			endpoint: "https://collector.example.com/v1/traces",
+			wantErr:  "signal-specific OTLP path",
+		},
+		{
+			name:     "invalid scheme",
+			endpoint: "grpc://collector.internal:4318",
+			wantErr:  "unsupported URL scheme",
+		},
+		{
+			name:     "missing host",
+			endpoint: "http://",
+			wantErr:  "missing host",
+		},
+		{
+			name:     "query not allowed",
+			endpoint: "http://collector.internal:4318?debug=true",
+			wantErr:  "query string",
+		},
+		{
+			name:     "userinfo not allowed",
+			endpoint: "https://user:pass@collector.internal:4318",
+			wantErr:  "userinfo",
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			gotHost, gotInsecure, gotPath, err := parseOTLPEndpoint(tt.endpoint)
+			if tt.wantErr != "" {
+				if err == nil {
+					t.Fatalf("parseOTLPEndpoint() error = nil, want substring %q", tt.wantErr)
+				}
+				if !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("parseOTLPEndpoint() error = %q, want substring %q", err.Error(), tt.wantErr)
+				}
+				return
+			}
+
+			if err != nil {
+				t.Fatalf("parseOTLPEndpoint() unexpected error = %v", err)
+			}
+			if gotHost != tt.wantHost {
+				t.Fatalf("parseOTLPEndpoint() host = %q, want %q", gotHost, tt.wantHost)
+			}
+			if gotInsecure != tt.wantInsecure {
+				t.Fatalf("parseOTLPEndpoint() insecure = %t, want %t", gotInsecure, tt.wantInsecure)
+			}
+			if gotPath != tt.wantPath {
+				t.Fatalf("parseOTLPEndpoint() path prefix = %q, want %q", gotPath, tt.wantPath)
+			}
+		})
+	}
+}
+
+func TestValidateNoInsecureOTLPEnv(t *testing.T) {
+	t.Run("allows https without insecure env", func(t *testing.T) {
+		if err := validateNoInsecureOTLPEnv(false); err != nil {
+			t.Fatalf("validateNoInsecureOTLPEnv(false) unexpected error = %v", err)
+		}
+	})
+
+	t.Run("rejects insecure env for https", func(t *testing.T) {
+		t.Setenv("OTEL_EXPORTER_OTLP_INSECURE", "true")
+		if err := validateNoInsecureOTLPEnv(false); err == nil {
+			t.Fatal("validateNoInsecureOTLPEnv(false) error = nil, want conflict error")
+		}
+	})
+
+	t.Run("rejects invalid boolean in insecure env", func(t *testing.T) {
+		t.Setenv("OTEL_EXPORTER_OTLP_TRACES_INSECURE", "maybe")
+		if err := validateNoInsecureOTLPEnv(false); err == nil {
+			t.Fatal("validateNoInsecureOTLPEnv(false) error = nil, want boolean parse error")
+		}
+	})
+
+	t.Run("allows insecure env for http endpoint", func(t *testing.T) {
+		t.Setenv("OTEL_EXPORTER_OTLP_LOGS_INSECURE", "true")
+		if err := validateNoInsecureOTLPEnv(true); err != nil {
+			t.Fatalf("validateNoInsecureOTLPEnv(true) unexpected error = %v", err)
+		}
+	})
+
+	t.Run("rejects signal endpoint with http scheme for https base endpoint", func(t *testing.T) {
+		t.Setenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "http://collector.internal:4318/v1/traces")
+		if err := validateNoInsecureOTLPEnv(false); err == nil {
+			t.Fatal("validateNoInsecureOTLPEnv(false) error = nil, want scheme conflict error")
+		}
+	})
+
+	t.Run("allows signal endpoint with https scheme for https base endpoint", func(t *testing.T) {
+		t.Setenv("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT", "https://collector.internal:4318/v1/metrics")
+		if err := validateNoInsecureOTLPEnv(false); err != nil {
+			t.Fatalf("validateNoInsecureOTLPEnv(false) unexpected error = %v", err)
+		}
+	})
 }
 
 func waitForInFlightRequestsValue(t *testing.T, ctx context.Context, reader *sdkmetric.ManualReader, method string, route string, want int64) int64 {

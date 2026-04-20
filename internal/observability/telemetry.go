@@ -5,6 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
+	"os"
+	"path"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -88,19 +93,41 @@ func (t *inFlightTracker) snapshot() map[inFlightKey]int64 {
 }
 
 func InitTelemetry(ctx context.Context, endpoint string, serviceName string) (*Telemetry, error) {
+	otlpEndpoint, useInsecureTransport, otlpPathPrefix, err := parseOTLPEndpoint(endpoint)
+	if err != nil {
+		return nil, fmt.Errorf("parse otlp endpoint: %w", err)
+	}
+	if err := validateNoInsecureOTLPEnv(useInsecureTransport); err != nil {
+		return nil, err
+	}
+
 	res, err := resource.New(ctx, resource.WithAttributes(semconv.ServiceName(serviceName)))
 	if err != nil {
 		return nil, fmt.Errorf("build telemetry resource: %w", err)
 	}
 
-	traceExporter, err := otlptracehttp.New(ctx, otlptracehttp.WithEndpointURL(endpoint))
+	traceOptions := []otlptracehttp.Option{
+		otlptracehttp.WithEndpoint(otlpEndpoint),
+		otlptracehttp.WithURLPath(joinOTLPPath(otlpPathPrefix, "/v1/traces")),
+	}
+	if useInsecureTransport {
+		traceOptions = append(traceOptions, otlptracehttp.WithInsecure())
+	}
+	traceExporter, err := otlptracehttp.New(ctx, traceOptions...)
 	if err != nil {
 		return nil, fmt.Errorf("build otlp trace exporter: %w", err)
 	}
 	traceProvider := sdktrace.NewTracerProvider(sdktrace.WithBatcher(traceExporter), sdktrace.WithResource(res))
 	otel.SetTracerProvider(traceProvider)
 
-	metricExporter, err := otlpmetrichttp.New(ctx, otlpmetrichttp.WithEndpointURL(endpoint))
+	metricOptions := []otlpmetrichttp.Option{
+		otlpmetrichttp.WithEndpoint(otlpEndpoint),
+		otlpmetrichttp.WithURLPath(joinOTLPPath(otlpPathPrefix, "/v1/metrics")),
+	}
+	if useInsecureTransport {
+		metricOptions = append(metricOptions, otlpmetrichttp.WithInsecure())
+	}
+	metricExporter, err := otlpmetrichttp.New(ctx, metricOptions...)
 	if err != nil {
 		return nil, fmt.Errorf("build otlp metric exporter: %w", err)
 	}
@@ -110,7 +137,14 @@ func InitTelemetry(ctx context.Context, endpoint string, serviceName string) (*T
 	)
 	otel.SetMeterProvider(metricProvider)
 
-	logExporter, err := otlploghttp.New(ctx, otlploghttp.WithEndpointURL(endpoint))
+	logOptions := []otlploghttp.Option{
+		otlploghttp.WithEndpoint(otlpEndpoint),
+		otlploghttp.WithURLPath(joinOTLPPath(otlpPathPrefix, "/v1/logs")),
+	}
+	if useInsecureTransport {
+		logOptions = append(logOptions, otlploghttp.WithInsecure())
+	}
+	logExporter, err := otlploghttp.New(ctx, logOptions...)
 	if err != nil {
 		return nil, fmt.Errorf("build otlp log exporter: %w", err)
 	}
@@ -147,6 +181,102 @@ func InitTelemetry(ctx context.Context, endpoint string, serviceName string) (*T
 			traceProvider.Shutdown,
 		},
 	}, nil
+}
+
+func parseOTLPEndpoint(endpoint string) (string, bool, string, error) {
+	parsedURL, err := url.Parse(endpoint)
+	if err != nil {
+		return "", false, "", fmt.Errorf("invalid URL %q: %w", endpoint, err)
+	}
+	if parsedURL.Scheme != "http" && parsedURL.Scheme != "https" {
+		return "", false, "", fmt.Errorf("unsupported URL scheme %q, expected http or https", parsedURL.Scheme)
+	}
+	if parsedURL.Host == "" {
+		return "", false, "", errors.New("missing host in URL")
+	}
+	if parsedURL.User != nil {
+		return "", false, "", errors.New("userinfo in OTLP endpoint is not allowed; configure authentication via supported headers/environment instead")
+	}
+	if parsedURL.RawQuery != "" {
+		return "", false, "", errors.New("query string is not allowed in OTLP endpoint")
+	}
+	if parsedURL.Fragment != "" {
+		return "", false, "", errors.New("fragment is not allowed in OTLP endpoint")
+	}
+
+	normalizedPathPrefix := "/"
+	if parsedURL.Path != "" {
+		normalizedPathPrefix = path.Clean(parsedURL.Path)
+	}
+	if normalizedPathPrefix == "." {
+		normalizedPathPrefix = "/"
+	}
+	if normalizedPathPrefix == "/v1" || strings.HasPrefix(normalizedPathPrefix, "/v1/") {
+		return "", false, "", fmt.Errorf("path %q is a signal-specific OTLP path; use a base endpoint or proxy prefix instead", normalizedPathPrefix)
+	}
+
+	return parsedURL.Host, parsedURL.Scheme == "http", normalizedPathPrefix, nil
+}
+
+func joinOTLPPath(prefix string, signalPath string) string {
+	base := prefix
+	if base == "" || base == "." {
+		base = "/"
+	}
+	return path.Join(base, signalPath)
+}
+
+func validateNoInsecureOTLPEnv(useInsecureTransport bool) error {
+	if useInsecureTransport {
+		return nil
+	}
+
+	insecureVars := []string{
+		"OTEL_EXPORTER_OTLP_INSECURE",
+		"OTEL_EXPORTER_OTLP_TRACES_INSECURE",
+		"OTEL_EXPORTER_OTLP_METRICS_INSECURE",
+		"OTEL_EXPORTER_OTLP_LOGS_INSECURE",
+	}
+	for _, envName := range insecureVars {
+		rawValue := strings.TrimSpace(os.Getenv(envName))
+		if rawValue == "" {
+			continue
+		}
+		parsed, err := strconv.ParseBool(rawValue)
+		if err != nil {
+			return fmt.Errorf("%s must be a valid boolean when set, got %q", envName, rawValue)
+		}
+		if parsed {
+			return fmt.Errorf("%s=true conflicts with https OTLP endpoint; unset it or use http endpoint", envName)
+		}
+	}
+
+	signalEndpointVars := []string{
+		"OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
+		"OTEL_EXPORTER_OTLP_METRICS_ENDPOINT",
+		"OTEL_EXPORTER_OTLP_LOGS_ENDPOINT",
+	}
+	for _, envName := range signalEndpointVars {
+		rawValue := strings.TrimSpace(os.Getenv(envName))
+		if rawValue == "" {
+			continue
+		}
+		parsedURL, err := url.Parse(rawValue)
+		if err != nil {
+			return fmt.Errorf("%s must be a valid URL when set, got %q: %w", envName, rawValue, err)
+		}
+		if parsedURL.Scheme == "" {
+			return fmt.Errorf("%s must include URL scheme http or https, got %q", envName, rawValue)
+		}
+		if parsedURL.Scheme == "http" {
+			return fmt.Errorf("%s=%q conflicts with https OTLP endpoint; use https or unset it", envName, rawValue)
+		}
+		if parsedURL.Scheme != "https" {
+			return fmt.Errorf("%s must use scheme http or https, got %q", envName, parsedURL.Scheme)
+		}
+	}
+
+	return nil
 }
 
 func initHTTPMetrics(meter metric.Meter, inFlightCurrent *inFlightTracker) (
