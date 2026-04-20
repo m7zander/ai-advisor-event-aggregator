@@ -208,6 +208,7 @@ func (c *Client) doOnce(ctx context.Context, body []byte, attempt int) ([]byte, 
 
 func shouldRetryHTTPStatus(status int) bool {
 	return status == http.StatusTooManyRequests ||
+		status == http.StatusInternalServerError ||
 		status == http.StatusBadGateway ||
 		status == http.StatusServiceUnavailable ||
 		status == http.StatusGatewayTimeout
@@ -230,10 +231,10 @@ func shouldRetryTransportError(ctx context.Context, err error) bool {
 func (c *Client) computeRetryDelay(resp *http.Response, responseBody []byte, attempt int) time.Duration {
 	if resp.StatusCode == http.StatusTooManyRequests {
 		if d, ok := parseRetryAfter(resp.Header.Get("Retry-After")); ok {
-			return minDuration(c.retryMaxDelay, d)
+			return d
 		}
 		if d, ok := parseOpenAIRetryDelay(responseBody); ok {
-			return minDuration(c.retryMaxDelay, d)
+			return d
 		}
 	}
 	return c.nextBackoffDelay(attempt)

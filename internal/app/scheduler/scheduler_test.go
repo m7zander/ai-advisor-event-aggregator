@@ -492,12 +492,13 @@ func TestLogBatchErrorSummary(t *testing.T) {
 			{ArticleID: 1, Outcome: "", Error: "db timeout: connect"},
 			{ArticleID: 2, Outcome: "", Error: "db timeout: read"},
 			{ArticleID: 3, Outcome: "", Error: "schema mismatch: field x"},
+			{ArticleID: 5, Outcome: "", Error: `non-2xx response: status=429 body={"error":{"message":"sensitive"}}`},
 			{ArticleID: 4, Outcome: appextraction.ExecutionOutcomeAlreadyDone, Error: ""},
 		},
 	})
 
 	output := logBuffer.String()
-	if !strings.Contains(output, `"event":"app.scheduler.dispatch_batch_error_summary"`) || !strings.Contains(output, `"total_errors":3`) {
+	if !strings.Contains(output, `"event":"app.scheduler.dispatch_batch_error_summary"`) || !strings.Contains(output, `"total_errors":4`) {
 		t.Fatalf("expected summary line in output, got: %s", output)
 	}
 	if !strings.Contains(output, `"event":"app.scheduler.dispatch_batch_error_cause"`) || !strings.Contains(output, `"cause":"db timeout"`) {
@@ -512,8 +513,11 @@ func TestLogBatchErrorSummary(t *testing.T) {
 	if !strings.Contains(output, `"reaction":"item marked failed; batch continues"`) {
 		t.Fatalf("expected reaction contract in output, got: %s", output)
 	}
-	if strings.Contains(output, `"cause":"non-2xx response: status=429 body={\"`) {
+	if strings.Contains(output, "sensitive") {
 		t.Fatalf("expected redacted cause, got: %s", output)
+	}
+	if !strings.Contains(output, `"cause":"non-2xx response: status=429 body=[redacted]"`) {
+		t.Fatalf("expected explicit redacted 429 cause, got: %s", output)
 	}
 	if !strings.Contains(output, `"sanitized_input":"{\"article_id\":3,\"outcome\":\"\"}"`) {
 		t.Fatalf("expected sanitized_input contract in output, got: %s", output)

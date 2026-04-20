@@ -482,9 +482,8 @@ func countBatchOutcomes(stats *CycleStats, result appextraction.PersistBatchResu
 
 	for _, item := range result.Items {
 		if item.Error != "" {
-			sanitizedError := sanitizeErrorText(item.Error)
-			cause := normalizeBatchErrorCause(sanitizedError)
-			category := classifyError(sanitizedError)
+			cause := normalizeBatchErrorCause(item.Error)
+			category := classifyError(item.Error)
 			key := buildErrorCauseKey(category, cause)
 			stats.ErrorCauses[key]++
 			samples := stats.ErrorSampleIDs[key]
@@ -602,9 +601,8 @@ func (s *Scheduler) logBatchErrorSummary(result appextraction.PersistBatchResult
 		}
 
 		totalErrors++
-		sanitizedError := sanitizeErrorText(item.Error)
-		cause := normalizeBatchErrorCause(sanitizedError)
-		category := classifyError(sanitizedError)
+		cause := normalizeBatchErrorCause(item.Error)
+		category := classifyError(item.Error)
 		key := buildErrorCauseKey(category, cause)
 		aggregate, ok := aggregates[key]
 		if !ok {
@@ -618,6 +616,7 @@ func (s *Scheduler) logBatchErrorSummary(result appextraction.PersistBatchResult
 		}
 
 		if s.cfg.LogFailedItems {
+			sanitizedError := sanitizeErrorText(item.Error)
 			s.logger.ErrorWithContract(context.Background(), "app.scheduler.dispatch_batch_failed_item", "app/scheduler", "scheduler dispatch batch failed item", fmt.Errorf("%s", sanitizedError), logging.ErrorContract{
 				Failure:        "scheduler_dispatch_item_failed",
 				Cause:          sanitizedError,

@@ -396,6 +396,88 @@ func TestClientExtract_MaxRetryExceeded(t *testing.T) {
 	}
 }
 
+// TestClientExtract_RetryOn500 verifies transient HTTP 500 responses are retried.
+func TestClientExtract_RetryOn500(t *testing.T) {
+	in := validInput(t)
+	resultJSON, err := json.Marshal(validResult(in.ArticleID))
+	if err != nil {
+		t.Fatalf("marshal result json: %v", err)
+	}
+
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		current := calls.Add(1)
+		if current == 1 {
+			http.Error(w, "temporary internal error", http.StatusInternalServerError)
+			return
+		}
+		writeChatResponse(t, w, string(resultJSON))
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv.URL)
+	client.sleepFn = func(ctx context.Context, _ time.Duration) error {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+			return nil
+		}
+	}
+	client.jitterFn = func(_ time.Duration) time.Duration { return 0 }
+
+	if _, err := client.Extract(context.Background(), in); err != nil {
+		t.Fatalf("expected retry success after 500, got error: %v", err)
+	}
+	if got := calls.Load(); got != 2 {
+		t.Fatalf("unexpected call count: got %d want 2", got)
+	}
+}
+
+// TestClientExtract_RetryAfterHeaderNotCappedByBackoff verifies Retry-After duration is honored even when > backoff max.
+func TestClientExtract_RetryAfterHeaderNotCappedByBackoff(t *testing.T) {
+	in := validInput(t)
+	resultJSON, err := json.Marshal(validResult(in.ArticleID))
+	if err != nil {
+		t.Fatalf("marshal result json: %v", err)
+	}
+
+	var calls atomic.Int32
+	var waited atomic.Int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		current := calls.Add(1)
+		if current == 1 {
+			w.Header().Set("Retry-After", "30")
+			http.Error(w, `{"error":{"message":"rate limited"}}`, http.StatusTooManyRequests)
+			return
+		}
+		writeChatResponse(t, w, string(resultJSON))
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv.URL)
+	client.sleepFn = func(ctx context.Context, d time.Duration) error {
+		waited.Store(int64(d))
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+			return nil
+		}
+	}
+	client.jitterFn = func(_ time.Duration) time.Duration { return 0 }
+
+	if _, err := client.Extract(context.Background(), in); err != nil {
+		t.Fatalf("expected retry success, got error: %v", err)
+	}
+	if got := calls.Load(); got != 2 {
+		t.Fatalf("unexpected call count: got %d want 2", got)
+	}
+	if got := time.Duration(waited.Load()); got != 30*time.Second {
+		t.Fatalf("unexpected wait duration: got %s want %s", got, 30*time.Second)
+	}
+}
+
 // TestClientExtract_ValidationFailure verifies parsed JSON that violates domain constraints is rejected.
 // It serves a JSON object with an invalid enum value.
 // It fails if validation errors are not propagated.
