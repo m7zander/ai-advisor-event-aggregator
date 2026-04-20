@@ -16,12 +16,14 @@ func TestParseConfigFromEnvDefaults(t *testing.T) {
 	t.Setenv("SCHEDULER_BATCH_SIZE", "")
 	t.Setenv("SCHEDULER_LOG_BATCH_IDS", "")
 	t.Setenv("SCHEDULER_LOG_FAILED_ITEMS", "")
+	t.Setenv("SCHEDULER_RATE_LIMIT_THRESHOLD", "")
+	t.Setenv("SCHEDULER_RATE_LIMIT_COOLDOWN_MS", "")
 
 	cfg, err := ParseConfigFromEnv()
 	if err != nil {
 		t.Fatalf("ParseConfigFromEnv() error = %v", err)
 	}
-	if cfg.Enabled != defaultEnabled || cfg.PollInterval != defaultPollInterval || cfg.PageSize != defaultPageSize || cfg.MaxPagesPerCycle != defaultMaxPagesPerCycle || cfg.DispatchConcurrency != defaultDispatchConcurrency || cfg.BatchSize != defaultBatchSize || cfg.LogBatchIDs != defaultLogBatchIDs || cfg.LogFailedItems != defaultLogFailedItems {
+	if cfg.Enabled != defaultEnabled || cfg.PollInterval != defaultPollInterval || cfg.PageSize != defaultPageSize || cfg.MaxPagesPerCycle != defaultMaxPagesPerCycle || cfg.DispatchConcurrency != defaultDispatchConcurrency || cfg.BatchSize != defaultBatchSize || cfg.LogBatchIDs != defaultLogBatchIDs || cfg.LogFailedItems != defaultLogFailedItems || cfg.RateLimitThreshold != defaultRateLimitThreshold || cfg.RateLimitCooldown != defaultRateLimitCooldown {
 		t.Fatalf("unexpected defaults: %+v", cfg)
 	}
 }
@@ -36,12 +38,14 @@ func TestParseConfigFromEnvValid(t *testing.T) {
 	t.Setenv("SCHEDULER_BATCH_SIZE", "8")
 	t.Setenv("SCHEDULER_LOG_BATCH_IDS", "true")
 	t.Setenv("SCHEDULER_LOG_FAILED_ITEMS", "true")
+	t.Setenv("SCHEDULER_RATE_LIMIT_THRESHOLD", "6")
+	t.Setenv("SCHEDULER_RATE_LIMIT_COOLDOWN_MS", "2000")
 
 	cfg, err := ParseConfigFromEnv()
 	if err != nil {
 		t.Fatalf("ParseConfigFromEnv() error = %v", err)
 	}
-	if !cfg.Enabled || cfg.PollInterval != 60*time.Second || cfg.PageSize != 25 || cfg.MaxPagesPerCycle != 4 || cfg.DispatchConcurrency != 3 || cfg.BatchSize != 8 || !cfg.LogBatchIDs || !cfg.LogFailedItems {
+	if !cfg.Enabled || cfg.PollInterval != 60*time.Second || cfg.PageSize != 25 || cfg.MaxPagesPerCycle != 4 || cfg.DispatchConcurrency != 3 || cfg.BatchSize != 8 || !cfg.LogBatchIDs || !cfg.LogFailedItems || cfg.RateLimitThreshold != 6 || cfg.RateLimitCooldown != 2*time.Second {
 		t.Fatalf("unexpected config: %+v", cfg)
 	}
 }
@@ -51,5 +55,17 @@ func TestParseConfigFromEnvInvalid(t *testing.T) {
 	t.Setenv("SCHEDULER_POLL_INTERVAL_MS", "x")
 	if _, err := ParseConfigFromEnv(); err == nil {
 		t.Fatal("ParseConfigFromEnv() error = nil, want non-nil")
+	}
+
+	t.Setenv("SCHEDULER_POLL_INTERVAL_MS", "")
+	t.Setenv("SCHEDULER_RATE_LIMIT_THRESHOLD", "0")
+	if _, err := ParseConfigFromEnv(); err == nil {
+		t.Fatal("ParseConfigFromEnv() error = nil, want non-nil for threshold")
+	}
+
+	t.Setenv("SCHEDULER_RATE_LIMIT_THRESHOLD", "")
+	t.Setenv("SCHEDULER_RATE_LIMIT_COOLDOWN_MS", "-5")
+	if _, err := ParseConfigFromEnv(); err == nil {
+		t.Fatal("ParseConfigFromEnv() error = nil, want non-nil for cooldown")
 	}
 }

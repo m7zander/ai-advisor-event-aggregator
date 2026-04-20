@@ -16,6 +16,7 @@ import (
 )
 
 var timeNewTicker = time.NewTicker
+var schedulerWait = waitForDuration
 
 const (
 	batchErrorSummaryTopN      = 5
@@ -83,6 +84,8 @@ type CycleStats struct {
 	ErrorSampleIDs   map[string][]int64
 	DiscoveredIDs    []int64
 	DispatchedIDSize int
+	RateLimitedCount int
+	ThrottleApplied  bool
 }
 
 // New constructs a scheduler with explicit dependencies.
@@ -102,7 +105,7 @@ func New(upstreamClient UpstreamClient, runner ExtractionBatchRunner, logger *lo
 	if cfg.PollInterval <= 0 {
 		return nil, fmt.Errorf("poll interval must be > 0")
 	}
-	if cfg.PageSize <= 0 || cfg.MaxPagesPerCycle <= 0 || cfg.DispatchConcurrency <= 0 || cfg.BatchSize <= 0 {
+	if cfg.PageSize <= 0 || cfg.MaxPagesPerCycle <= 0 || cfg.DispatchConcurrency <= 0 || cfg.BatchSize <= 0 || cfg.RateLimitThreshold <= 0 || cfg.RateLimitCooldown <= 0 {
 		return nil, fmt.Errorf("invalid scheduler numeric config")
 	}
 	return &Scheduler{upstreamClient: upstreamClient, runner: runner, logger: logger, cfg: cfg}, nil
@@ -173,6 +176,8 @@ func (s *Scheduler) runCycleWithLogging(ctx context.Context) {
 		logging.Field{Key: "already_failed", Value: stats.AlreadyFailed},
 		logging.Field{Key: "failed", Value: stats.Failed},
 		logging.Field{Key: "dispatch_errors", Value: stats.DispatchErrors},
+		logging.Field{Key: "rate_limited_count", Value: stats.RateLimitedCount},
+		logging.Field{Key: "throttle_applied", Value: stats.ThrottleApplied},
 		logging.Field{Key: "error_causes_top", Value: formatCycleErrorCausesTop(stats, batchErrorSummaryTopN)},
 	)
 }
@@ -210,7 +215,26 @@ func (s *Scheduler) runCycle(ctx context.Context) (CycleStats, error) {
 	stats.DiscoveredIDs = ids
 
 	batches := chunkIDs(ids, s.cfg.BatchSize)
+	effectiveConcurrency := s.cfg.DispatchConcurrency
+	throttleActive := false
 	for batchIdx, chunk := range batches {
+		if throttleActive {
+			appliedCooldown := s.cfg.RateLimitCooldown
+			s.logger.Info(ctx, "app.scheduler.rate_limit_throttle_started", "app/scheduler", "scheduler rate-limit throttling started",
+				logging.Field{Key: "rate_limited_count", Value: stats.RateLimitedCount},
+				logging.Field{Key: "applied_cooldown_ms", Value: appliedCooldown.Milliseconds()},
+				logging.Field{Key: "effective_concurrency", Value: effectiveConcurrency},
+			)
+			if err := schedulerWait(ctx, appliedCooldown); err != nil {
+				return stats, fmt.Errorf("rate-limit throttle wait canceled: %w", err)
+			}
+			s.logger.Info(ctx, "app.scheduler.rate_limit_throttle_completed", "app/scheduler", "scheduler rate-limit throttling completed",
+				logging.Field{Key: "rate_limited_count", Value: stats.RateLimitedCount},
+				logging.Field{Key: "applied_cooldown_ms", Value: appliedCooldown.Milliseconds()},
+				logging.Field{Key: "effective_concurrency", Value: effectiveConcurrency},
+			)
+		}
+
 		batchNumber := batchIdx + 1
 		batchArticles, convErr := s.buildBatchArticles(chunk, articles)
 		if convErr != nil {
@@ -228,25 +252,80 @@ func (s *Scheduler) runCycle(ctx context.Context) (CycleStats, error) {
 		stats.DispatchBatches++
 		stats.DispatchedIDSize += len(chunk)
 		s.logDispatchBatchStarted(batchNumber, len(batches), chunk)
-		result, dispatchErr := s.runner.RunBatch(ctx, batchArticles, s.cfg.DispatchConcurrency)
+		result, dispatchErr := s.runner.RunBatch(ctx, batchArticles, effectiveConcurrency)
 		if dispatchErr != nil {
 			stats.Failed += len(chunk)
 			stats.DispatchErrors++
+			if isRateLimitedError(dispatchErr.Error()) {
+				stats.RateLimitedCount += len(chunk)
+			}
 			s.logger.ErrorWithContract(ctx, "app.scheduler.dispatch_batch_failed", "app/scheduler", "scheduler dispatch batch failed", dispatchErr, logging.ErrorContract{
 				Failure:        "scheduler_dispatch_batch_failed",
 				Cause:          dispatchErr.Error(),
-				SanitizedInput: mustJSON(map[string]any{"article_ids": chunk, "batch_size": len(chunk), "dispatch_concurrency": s.cfg.DispatchConcurrency}),
+				SanitizedInput: mustJSON(map[string]any{"article_ids": chunk, "batch_size": len(chunk), "dispatch_concurrency": effectiveConcurrency}),
 				Reaction:       "batch skipped; cycle continues",
 			}, logging.Field{Key: "article_ids", Value: chunk})
+			if !throttleActive && stats.RateLimitedCount >= s.cfg.RateLimitThreshold {
+				throttleActive = true
+				stats.ThrottleApplied = true
+				effectiveConcurrency = throttledConcurrency(s.cfg.DispatchConcurrency)
+			}
 			continue
 		}
 		countBatchOutcomes(&stats, result)
+		stats.RateLimitedCount += countRateLimitedItems(result)
+		if !throttleActive && stats.RateLimitedCount >= s.cfg.RateLimitThreshold {
+			throttleActive = true
+			stats.ThrottleApplied = true
+			effectiveConcurrency = throttledConcurrency(s.cfg.DispatchConcurrency)
+		}
 		s.logBatchErrorSummary(result)
 		outcomeCounts := summarizeBatchOutcomes(result)
 		s.logDispatchBatchCompleted(batchNumber, len(batches), chunk, result.Total, outcomeCounts)
 	}
 
 	return stats, nil
+}
+
+func throttledConcurrency(base int) int {
+	if base <= 1 {
+		return 1
+	}
+	return (base + 1) / 2
+}
+
+func countRateLimitedItems(result appextraction.PersistBatchResult) int {
+	count := 0
+	for _, item := range result.Items {
+		if isRateLimitedError(item.Error) {
+			count++
+		}
+	}
+	return count
+}
+
+func isRateLimitedError(errText string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(errText))
+	if normalized == "" {
+		return false
+	}
+	return strings.Contains(normalized, "status=429") ||
+		strings.Contains(normalized, "rate limit") ||
+		strings.Contains(normalized, "too many requests")
+}
+
+func waitForDuration(ctx context.Context, d time.Duration) error {
+	if d <= 0 {
+		return nil
+	}
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 // logDispatchBatchStarted logs compact batch dispatch start metadata and optional batch IDs.
@@ -403,8 +482,9 @@ func countBatchOutcomes(stats *CycleStats, result appextraction.PersistBatchResu
 
 	for _, item := range result.Items {
 		if item.Error != "" {
-			cause := normalizeBatchErrorCause(item.Error)
-			category := classifyError(item.Error)
+			sanitizedError := sanitizeErrorText(item.Error)
+			cause := normalizeBatchErrorCause(sanitizedError)
+			category := classifyError(sanitizedError)
 			key := buildErrorCauseKey(category, cause)
 			stats.ErrorCauses[key]++
 			samples := stats.ErrorSampleIDs[key]
@@ -522,8 +602,9 @@ func (s *Scheduler) logBatchErrorSummary(result appextraction.PersistBatchResult
 		}
 
 		totalErrors++
-		cause := normalizeBatchErrorCause(item.Error)
-		category := classifyError(item.Error)
+		sanitizedError := sanitizeErrorText(item.Error)
+		cause := normalizeBatchErrorCause(sanitizedError)
+		category := classifyError(sanitizedError)
 		key := buildErrorCauseKey(category, cause)
 		aggregate, ok := aggregates[key]
 		if !ok {
@@ -537,9 +618,9 @@ func (s *Scheduler) logBatchErrorSummary(result appextraction.PersistBatchResult
 		}
 
 		if s.cfg.LogFailedItems {
-			s.logger.ErrorWithContract(context.Background(), "app.scheduler.dispatch_batch_failed_item", "app/scheduler", "scheduler dispatch batch failed item", fmt.Errorf("%s", item.Error), logging.ErrorContract{
+			s.logger.ErrorWithContract(context.Background(), "app.scheduler.dispatch_batch_failed_item", "app/scheduler", "scheduler dispatch batch failed item", fmt.Errorf("%s", sanitizedError), logging.ErrorContract{
 				Failure:        "scheduler_dispatch_item_failed",
-				Cause:          item.Error,
+				Cause:          sanitizedError,
 				SanitizedInput: mustJSON(map[string]any{"article_id": item.ArticleID, "outcome": item.Outcome}),
 				Reaction:       "item marked failed; batch continues",
 			},
@@ -595,6 +676,16 @@ func normalizeBatchErrorCause(rawError string) string {
 	if trimmed == "" {
 		return "unknown error"
 	}
+	if isRateLimitedError(trimmed) {
+		switch {
+		case strings.Contains(strings.ToLower(trimmed), "tpm"),
+			strings.Contains(strings.ToLower(trimmed), "tokens per min"),
+			strings.Contains(strings.ToLower(trimmed), "tokens per minute"):
+			return "rate_limit_tpm"
+		default:
+			return "rate_limit"
+		}
+	}
 
 	prefix, _, found := strings.Cut(trimmed, ":")
 	if !found {
@@ -614,6 +705,8 @@ func normalizeBatchErrorCause(rawError string) string {
 func classifyError(errText string) string {
 	normalized := strings.ToLower(strings.TrimSpace(errText))
 	switch {
+	case isRateLimitedError(normalized):
+		return "llm_rate_limit"
 	case strings.Contains(normalized, "non-2xx response"):
 		return "llm_http_non_2xx"
 	case strings.Contains(normalized, "http failure"):
@@ -630,6 +723,19 @@ func classifyError(errText string) string {
 	default:
 		return "unknown"
 	}
+}
+
+func sanitizeErrorText(errText string) string {
+	trimmed := strings.TrimSpace(errText)
+	if trimmed == "" {
+		return ""
+	}
+	lowered := strings.ToLower(trimmed)
+	bodyIdx := strings.Index(lowered, " body=")
+	if bodyIdx >= 0 {
+		return strings.TrimSpace(trimmed[:bodyIdx]) + " body=[redacted]"
+	}
+	return trimmed
 }
 
 // buildErrorCauseKey creates one deterministic map key from category and cause.
