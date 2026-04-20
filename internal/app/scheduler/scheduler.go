@@ -297,6 +297,9 @@ func throttledConcurrency(base int) int {
 func countRateLimitedItems(result appextraction.PersistBatchResult) int {
 	count := 0
 	for _, item := range result.Items {
+		if item.Outcome == appextraction.ExecutionOutcomeAlreadyFailed {
+			continue
+		}
 		if isRateLimitedError(item.Error) {
 			count++
 		}

@@ -312,6 +312,64 @@ func TestRunCycleRateLimitThrottleNotTriggered(t *testing.T) {
 	}
 }
 
+// TestRunCycleRateLimitThrottleIgnoresAlreadyFailed verifies historical already_failed rate-limit errors do not trigger throttle.
+func TestRunCycleRateLimitThrottleIgnoresAlreadyFailed(t *testing.T) {
+	now := time.Now().UTC().Format(time.RFC3339)
+	upstream := &fakeUpstreamClient{pages: map[int]UpstreamArticlesResponse{
+		0: {Data: []UpstreamArticle{{ID: 1, PublishedAt: now}, {ID: 2, PublishedAt: now}, {ID: 3, PublishedAt: now}}},
+		1: {Data: []UpstreamArticle{}},
+	}}
+	runner := &fakeRunner{
+		results: []appextraction.PersistBatchResult{
+			{Items: []appextraction.PersistBatchItemResult{
+				{ArticleID: 1, Outcome: appextraction.ExecutionOutcomeAlreadyFailed, Error: "non-2xx response: status=429"},
+				{ArticleID: 2, Outcome: appextraction.ExecutionOutcomeAlreadyDone},
+			}},
+			{Items: []appextraction.PersistBatchItemResult{
+				{ArticleID: 3, Outcome: appextraction.ExecutionOutcomeNewlyExtracted},
+			}},
+		},
+	}
+	logBuffer := bytes.NewBuffer(nil)
+	s, err := New(upstream, runner, logging.NewWithWriters(logBuffer, logBuffer), Config{
+		PollInterval:        time.Second,
+		PageSize:            10,
+		MaxPagesPerCycle:    10,
+		DispatchConcurrency: 4,
+		BatchSize:           2,
+		RateLimitThreshold:  1,
+		RateLimitCooldown:   150 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	originalWait := schedulerWait
+	var waitCalls atomic.Int32
+	schedulerWait = func(_ context.Context, _ time.Duration) error {
+		waitCalls.Add(1)
+		return nil
+	}
+	defer func() { schedulerWait = originalWait }()
+
+	stats, err := s.runCycle(context.Background())
+	if err != nil {
+		t.Fatalf("runCycle() error = %v", err)
+	}
+	if stats.ThrottleApplied {
+		t.Fatalf("did not expect throttle for already_failed historical errors, stats=%+v", stats)
+	}
+	if stats.RateLimitedCount != 0 {
+		t.Fatalf("RateLimitedCount = %d, want 0", stats.RateLimitedCount)
+	}
+	if waitCalls.Load() != 0 {
+		t.Fatalf("wait calls = %d, want 0", waitCalls.Load())
+	}
+	if len(runner.concurrency) != 2 || runner.concurrency[0] != 4 || runner.concurrency[1] != 4 {
+		t.Fatalf("runner concurrency calls = %v, want [4 4]", runner.concurrency)
+	}
+}
+
 // TestRunStopsOnContextCancellation verifies Run exits when context is canceled.
 func TestRunStopsOnContextCancellation(t *testing.T) {
 	t.Parallel()
@@ -381,6 +439,21 @@ func TestCountBatchOutcomes(t *testing.T) {
 	}
 	if got := stats.ErrorSampleIDs["unknown|hard failure"]; !reflect.DeepEqual(got, []int64{0}) {
 		t.Fatalf("ErrorSampleIDs[unknown|hard failure] = %v, want [0]", got)
+	}
+}
+
+// TestCountRateLimitedItemsIgnoresAlreadyFailed verifies old persisted failures do not inflate current cycle rate-limit counts.
+func TestCountRateLimitedItemsIgnoresAlreadyFailed(t *testing.T) {
+	t.Parallel()
+	result := appextraction.PersistBatchResult{
+		Items: []appextraction.PersistBatchItemResult{
+			{ArticleID: 10, Outcome: appextraction.ExecutionOutcomeAlreadyFailed, Error: "non-2xx response: status=429"},
+			{ArticleID: 11, Outcome: appextraction.ExecutionOutcomeAlreadyDone},
+			{ArticleID: 12, Outcome: "", Error: "non-2xx response: status=429"},
+		},
+	}
+	if got := countRateLimitedItems(result); got != 1 {
+		t.Fatalf("countRateLimitedItems() = %d, want 1", got)
 	}
 }
 
