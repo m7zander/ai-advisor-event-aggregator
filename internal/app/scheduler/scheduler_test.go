@@ -50,7 +50,9 @@ func (f *fakeUpstreamClient) ListEligibleArticles(_ context.Context, limit int, 
 type fakeRunner struct {
 	mu              sync.Mutex
 	batches         [][]int64
+	concurrency     []int
 	result          appextraction.PersistBatchResult
+	results         []appextraction.PersistBatchResult
 	err             error
 	active          int32
 	maxActive       int32
@@ -60,7 +62,7 @@ type fakeRunner struct {
 // RunBatch records one batch and returns the preconfigured result/error.
 // The ctx parameter controls cancellation via caller, articles is mapped to IDs for assertions, concurrency is ignored.
 // It returns the configured result and error.
-func (f *fakeRunner) RunBatch(_ context.Context, articles []appextraction.Article, _ int) (appextraction.PersistBatchResult, error) {
+func (f *fakeRunner) RunBatch(_ context.Context, articles []appextraction.Article, concurrency int) (appextraction.PersistBatchResult, error) {
 	current := atomic.AddInt32(&f.active, 1)
 	defer atomic.AddInt32(&f.active, -1)
 	for {
@@ -82,7 +84,12 @@ func (f *fakeRunner) RunBatch(_ context.Context, articles []appextraction.Articl
 	}
 	f.mu.Lock()
 	f.batches = append(f.batches, ids)
+	f.concurrency = append(f.concurrency, concurrency)
+	callIndex := len(f.batches) - 1
 	f.mu.Unlock()
+	if callIndex < len(f.results) {
+		return f.results[callIndex], f.err
+	}
 	return f.result, f.err
 }
 
@@ -95,7 +102,7 @@ func TestFetchEligibleArticlesPaging(t *testing.T) {
 		2: {Data: []UpstreamArticle{}},
 	}}
 	runner := &fakeRunner{}
-	s, err := New(upstream, runner, logging.NewWithWriters(bytes.NewBuffer(nil), bytes.NewBuffer(nil)), Config{PollInterval: time.Second, PageSize: 1, MaxPagesPerCycle: 10, DispatchConcurrency: 2, BatchSize: 2})
+	s, err := New(upstream, runner, logging.NewWithWriters(bytes.NewBuffer(nil), bytes.NewBuffer(nil)), Config{PollInterval: time.Second, PageSize: 1, MaxPagesPerCycle: 10, DispatchConcurrency: 2, BatchSize: 2, RateLimitThreshold: 3, RateLimitCooldown: time.Millisecond})
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -120,7 +127,7 @@ func TestFetchEligibleArticlesMaxPages(t *testing.T) {
 		1: {Data: []UpstreamArticle{{ID: 2, PublishedAt: time.Now().UTC().Format(time.RFC3339)}}},
 	}}
 	runner := &fakeRunner{}
-	s, err := New(upstream, runner, logging.NewWithWriters(bytes.NewBuffer(nil), bytes.NewBuffer(nil)), Config{PollInterval: time.Second, PageSize: 1, MaxPagesPerCycle: 1, DispatchConcurrency: 2, BatchSize: 2})
+	s, err := New(upstream, runner, logging.NewWithWriters(bytes.NewBuffer(nil), bytes.NewBuffer(nil)), Config{PollInterval: time.Second, PageSize: 1, MaxPagesPerCycle: 1, DispatchConcurrency: 2, BatchSize: 2, RateLimitThreshold: 3, RateLimitCooldown: time.Millisecond})
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -146,7 +153,7 @@ func TestRunCycleDispatch(t *testing.T) {
 		1: {Data: []UpstreamArticle{}},
 	}}
 	runner := &fakeRunner{result: appextraction.PersistBatchResult{Items: []appextraction.PersistBatchItemResult{{Outcome: appextraction.ExecutionOutcomeNewlyExtracted}}}}
-	s, err := New(upstream, runner, logging.NewWithWriters(bytes.NewBuffer(nil), bytes.NewBuffer(nil)), Config{PollInterval: time.Second, PageSize: 10, MaxPagesPerCycle: 10, DispatchConcurrency: 2, BatchSize: 2})
+	s, err := New(upstream, runner, logging.NewWithWriters(bytes.NewBuffer(nil), bytes.NewBuffer(nil)), Config{PollInterval: time.Second, PageSize: 10, MaxPagesPerCycle: 10, DispatchConcurrency: 2, BatchSize: 2, RateLimitThreshold: 3, RateLimitCooldown: time.Millisecond})
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -169,12 +176,206 @@ func TestRunCycleDispatch(t *testing.T) {
 	}
 }
 
+// TestRunCycleRateLimitThrottleTriggered verifies cycle-level rate-limit threshold triggers throttling for follow-up batches.
+func TestRunCycleRateLimitThrottleTriggered(t *testing.T) {
+	now := time.Now().UTC().Format(time.RFC3339)
+	upstream := &fakeUpstreamClient{pages: map[int]UpstreamArticlesResponse{
+		0: {Data: []UpstreamArticle{{ID: 1, PublishedAt: now}, {ID: 2, PublishedAt: now}, {ID: 3, PublishedAt: now}}},
+		1: {Data: []UpstreamArticle{}},
+	}}
+	runner := &fakeRunner{
+		results: []appextraction.PersistBatchResult{
+			{Items: []appextraction.PersistBatchItemResult{
+				{ArticleID: 1, Error: "non-2xx response: status=429"},
+				{ArticleID: 2, Error: "rate limit reached"},
+			}},
+			{Items: []appextraction.PersistBatchItemResult{
+				{ArticleID: 3, Outcome: appextraction.ExecutionOutcomeNewlyExtracted},
+			}},
+		},
+	}
+	logBuffer := bytes.NewBuffer(nil)
+	s, err := New(upstream, runner, logging.NewWithWriters(logBuffer, logBuffer), Config{
+		PollInterval:        time.Second,
+		PageSize:            10,
+		MaxPagesPerCycle:    10,
+		DispatchConcurrency: 4,
+		BatchSize:           2,
+		RateLimitThreshold:  2,
+		RateLimitCooldown:   150 * time.Millisecond,
+		LogBatchIDs:         false,
+		LogFailedItems:      false,
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	originalWait := schedulerWait
+	var waitCalls atomic.Int32
+	schedulerWait = func(ctx context.Context, _ time.Duration) error {
+		waitCalls.Add(1)
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+			return nil
+		}
+	}
+	defer func() { schedulerWait = originalWait }()
+
+	stats, err := s.runCycle(context.Background())
+	if err != nil {
+		t.Fatalf("runCycle() error = %v", err)
+	}
+	if !stats.ThrottleApplied {
+		t.Fatalf("expected throttle to be applied, stats=%+v", stats)
+	}
+	if stats.RateLimitedCount != 2 {
+		t.Fatalf("RateLimitedCount = %d, want 2", stats.RateLimitedCount)
+	}
+	if waitCalls.Load() != 1 {
+		t.Fatalf("wait calls = %d, want 1", waitCalls.Load())
+	}
+	if len(runner.concurrency) != 2 || runner.concurrency[0] != 4 || runner.concurrency[1] != 2 {
+		t.Fatalf("runner concurrency calls = %v, want [4 2]", runner.concurrency)
+	}
+	out := logBuffer.String()
+	if !strings.Contains(out, `"event":"app.scheduler.rate_limit_throttle_started"`) {
+		t.Fatalf("expected throttle start log, got: %s", out)
+	}
+	if !strings.Contains(out, `"event":"app.scheduler.rate_limit_throttle_completed"`) {
+		t.Fatalf("expected throttle completion log, got: %s", out)
+	}
+}
+
+// TestRunCycleRateLimitThrottleNotTriggered verifies no throttling is applied below threshold.
+func TestRunCycleRateLimitThrottleNotTriggered(t *testing.T) {
+	now := time.Now().UTC().Format(time.RFC3339)
+	upstream := &fakeUpstreamClient{pages: map[int]UpstreamArticlesResponse{
+		0: {Data: []UpstreamArticle{{ID: 1, PublishedAt: now}, {ID: 2, PublishedAt: now}, {ID: 3, PublishedAt: now}}},
+		1: {Data: []UpstreamArticle{}},
+	}}
+	runner := &fakeRunner{
+		results: []appextraction.PersistBatchResult{
+			{Items: []appextraction.PersistBatchItemResult{
+				{ArticleID: 1, Error: "validation failure"},
+				{ArticleID: 2, Outcome: appextraction.ExecutionOutcomeAlreadyDone},
+			}},
+			{Items: []appextraction.PersistBatchItemResult{
+				{ArticleID: 3, Outcome: appextraction.ExecutionOutcomeNewlyExtracted},
+			}},
+		},
+	}
+	logBuffer := bytes.NewBuffer(nil)
+	s, err := New(upstream, runner, logging.NewWithWriters(logBuffer, logBuffer), Config{
+		PollInterval:        time.Second,
+		PageSize:            10,
+		MaxPagesPerCycle:    10,
+		DispatchConcurrency: 4,
+		BatchSize:           2,
+		RateLimitThreshold:  2,
+		RateLimitCooldown:   150 * time.Millisecond,
+		LogBatchIDs:         false,
+		LogFailedItems:      false,
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	originalWait := schedulerWait
+	var waitCalls atomic.Int32
+	schedulerWait = func(_ context.Context, _ time.Duration) error {
+		waitCalls.Add(1)
+		return nil
+	}
+	defer func() { schedulerWait = originalWait }()
+
+	stats, err := s.runCycle(context.Background())
+	if err != nil {
+		t.Fatalf("runCycle() error = %v", err)
+	}
+	if stats.ThrottleApplied {
+		t.Fatalf("did not expect throttle, stats=%+v", stats)
+	}
+	if stats.RateLimitedCount != 0 {
+		t.Fatalf("RateLimitedCount = %d, want 0", stats.RateLimitedCount)
+	}
+	if waitCalls.Load() != 0 {
+		t.Fatalf("wait calls = %d, want 0", waitCalls.Load())
+	}
+	if len(runner.concurrency) != 2 || runner.concurrency[0] != 4 || runner.concurrency[1] != 4 {
+		t.Fatalf("runner concurrency calls = %v, want [4 4]", runner.concurrency)
+	}
+	out := logBuffer.String()
+	if strings.Contains(out, `"event":"app.scheduler.rate_limit_throttle_started"`) {
+		t.Fatalf("did not expect throttle logs, got: %s", out)
+	}
+}
+
+// TestRunCycleRateLimitThrottleIgnoresAlreadyFailed verifies historical already_failed rate-limit errors do not trigger throttle.
+func TestRunCycleRateLimitThrottleIgnoresAlreadyFailed(t *testing.T) {
+	now := time.Now().UTC().Format(time.RFC3339)
+	upstream := &fakeUpstreamClient{pages: map[int]UpstreamArticlesResponse{
+		0: {Data: []UpstreamArticle{{ID: 1, PublishedAt: now}, {ID: 2, PublishedAt: now}, {ID: 3, PublishedAt: now}}},
+		1: {Data: []UpstreamArticle{}},
+	}}
+	runner := &fakeRunner{
+		results: []appextraction.PersistBatchResult{
+			{Items: []appextraction.PersistBatchItemResult{
+				{ArticleID: 1, Outcome: appextraction.ExecutionOutcomeAlreadyFailed, Error: "non-2xx response: status=429"},
+				{ArticleID: 2, Outcome: appextraction.ExecutionOutcomeAlreadyDone},
+			}},
+			{Items: []appextraction.PersistBatchItemResult{
+				{ArticleID: 3, Outcome: appextraction.ExecutionOutcomeNewlyExtracted},
+			}},
+		},
+	}
+	logBuffer := bytes.NewBuffer(nil)
+	s, err := New(upstream, runner, logging.NewWithWriters(logBuffer, logBuffer), Config{
+		PollInterval:        time.Second,
+		PageSize:            10,
+		MaxPagesPerCycle:    10,
+		DispatchConcurrency: 4,
+		BatchSize:           2,
+		RateLimitThreshold:  1,
+		RateLimitCooldown:   150 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	originalWait := schedulerWait
+	var waitCalls atomic.Int32
+	schedulerWait = func(_ context.Context, _ time.Duration) error {
+		waitCalls.Add(1)
+		return nil
+	}
+	defer func() { schedulerWait = originalWait }()
+
+	stats, err := s.runCycle(context.Background())
+	if err != nil {
+		t.Fatalf("runCycle() error = %v", err)
+	}
+	if stats.ThrottleApplied {
+		t.Fatalf("did not expect throttle for already_failed historical errors, stats=%+v", stats)
+	}
+	if stats.RateLimitedCount != 0 {
+		t.Fatalf("RateLimitedCount = %d, want 0", stats.RateLimitedCount)
+	}
+	if waitCalls.Load() != 0 {
+		t.Fatalf("wait calls = %d, want 0", waitCalls.Load())
+	}
+	if len(runner.concurrency) != 2 || runner.concurrency[0] != 4 || runner.concurrency[1] != 4 {
+		t.Fatalf("runner concurrency calls = %v, want [4 4]", runner.concurrency)
+	}
+}
+
 // TestRunStopsOnContextCancellation verifies Run exits when context is canceled.
 func TestRunStopsOnContextCancellation(t *testing.T) {
 	t.Parallel()
 	upstream := &fakeUpstreamClient{pages: map[int]UpstreamArticlesResponse{0: {Data: []UpstreamArticle{}}}}
 	runner := &fakeRunner{}
-	s, err := New(upstream, runner, logging.NewWithWriters(bytes.NewBuffer(nil), bytes.NewBuffer(nil)), Config{PollInterval: time.Hour, PageSize: 1, MaxPagesPerCycle: 1, DispatchConcurrency: 1, BatchSize: 1})
+	s, err := New(upstream, runner, logging.NewWithWriters(bytes.NewBuffer(nil), bytes.NewBuffer(nil)), Config{PollInterval: time.Hour, PageSize: 1, MaxPagesPerCycle: 1, DispatchConcurrency: 1, BatchSize: 1, RateLimitThreshold: 3, RateLimitCooldown: time.Millisecond})
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -195,7 +396,7 @@ func TestRunCycleFailureHandling(t *testing.T) {
 		errors: map[int]error{0: errors.New("boom")},
 	}
 	runner := &fakeRunner{err: errors.New("dispatch boom")}
-	s, err := New(upstream, runner, logging.NewWithWriters(bytes.NewBuffer(nil), bytes.NewBuffer(nil)), Config{PollInterval: time.Second, PageSize: 10, MaxPagesPerCycle: 2, DispatchConcurrency: 1, BatchSize: 1})
+	s, err := New(upstream, runner, logging.NewWithWriters(bytes.NewBuffer(nil), bytes.NewBuffer(nil)), Config{PollInterval: time.Second, PageSize: 10, MaxPagesPerCycle: 2, DispatchConcurrency: 1, BatchSize: 1, RateLimitThreshold: 3, RateLimitCooldown: time.Millisecond})
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -241,24 +442,39 @@ func TestCountBatchOutcomes(t *testing.T) {
 	}
 }
 
+// TestCountRateLimitedItemsIgnoresAlreadyFailed verifies old persisted failures do not inflate current cycle rate-limit counts.
+func TestCountRateLimitedItemsIgnoresAlreadyFailed(t *testing.T) {
+	t.Parallel()
+	result := appextraction.PersistBatchResult{
+		Items: []appextraction.PersistBatchItemResult{
+			{ArticleID: 10, Outcome: appextraction.ExecutionOutcomeAlreadyFailed, Error: "non-2xx response: status=429"},
+			{ArticleID: 11, Outcome: appextraction.ExecutionOutcomeAlreadyDone},
+			{ArticleID: 12, Outcome: "", Error: "non-2xx response: status=429"},
+		},
+	}
+	if got := countRateLimitedItems(result); got != 1 {
+		t.Fatalf("countRateLimitedItems() = %d, want 1", got)
+	}
+}
+
 // TestFormatCycleErrorCausesTop verifies cycle-level compact top list rendering and deterministic ordering.
 func TestFormatCycleErrorCausesTop(t *testing.T) {
 	t.Parallel()
 	stats := CycleStats{
 		ErrorCauses: map[string]int{
-			"unknown|timeout":      4,
-			"unknown|schema":       2,
-			"unknown|rate limited": 2,
+			"unknown|timeout":               4,
+			"unknown|schema":                2,
+			"llm_rate_limit|rate_limit_tpm": 2,
 		},
 		ErrorSampleIDs: map[string][]int64{
-			"unknown|timeout":      {11, 12, 13},
-			"unknown|schema":       {21},
-			"unknown|rate limited": {31, 32},
+			"unknown|timeout":               {11, 12, 13},
+			"unknown|schema":                {21},
+			"llm_rate_limit|rate_limit_tpm": {31, 32},
 		},
 	}
 
 	got := formatCycleErrorCausesTop(stats, 2)
-	want := "1)category=unknown cause=timeout count=4(ids=[11 12 13]); 2)category=unknown cause=rate limited count=2(ids=[31 32])"
+	want := "1)category=unknown cause=timeout count=4(ids=[11 12 13]); 2)category=llm_rate_limit cause=rate_limit_tpm count=2(ids=[31 32])"
 	if got != want {
 		t.Fatalf("formatCycleErrorCausesTop() = %q, want %q", got, want)
 	}
@@ -277,6 +493,7 @@ func TestClassifyError(t *testing.T) {
 		want string
 	}{
 		{name: "llm non-2xx", in: "run extraction: extractor call failed: non-2xx response: status=502", want: "llm_http_non_2xx"},
+		{name: "llm rate limit 429", in: "run extraction: extractor call failed: non-2xx response: status=429 body={...}", want: "llm_rate_limit"},
 		{name: "llm http failure", in: "run extraction: extractor call failed: http failure: timeout", want: "llm_http_failure"},
 		{name: "llm json decode", in: "run extraction: extractor call failed: json decode failure: invalid character", want: "llm_json_decode"},
 		{name: "extract validation", in: "run extraction: validate extract result: confidence must be <= 1", want: "extract_validation"},
@@ -304,6 +521,8 @@ func TestNormalizeBatchErrorCause(t *testing.T) {
 		want string
 	}{
 		{name: "trim and prefix", in: " db timeout: context deadline exceeded ", want: "db timeout"},
+		{name: "429 tpm", in: "non-2xx response: status=429 body=Rate limit reached for tokens per min", want: "rate_limit_tpm"},
+		{name: "429 generic", in: "transient non-2xx response: status=429 body=something", want: "rate_limit"},
 		{name: "no colon", in: "invalid payload", want: "invalid payload"},
 		{name: "blank", in: "   ", want: "unknown error"},
 		{name: "empty prefix", in: ": trailing", want: ": trailing"},
@@ -316,6 +535,19 @@ func TestNormalizeBatchErrorCause(t *testing.T) {
 				t.Fatalf("normalizeBatchErrorCause(%q) = %q, want %q", tc.in, got, tc.want)
 			}
 		})
+	}
+}
+
+// TestSanitizeErrorText verifies response body fragments are redacted from logged/persisted causes.
+func TestSanitizeErrorText(t *testing.T) {
+	t.Parallel()
+	in := `non-2xx response: status=429 body={"error":{"message":"sensitive"}}`
+	got := sanitizeErrorText(in)
+	if strings.Contains(got, "sensitive") {
+		t.Fatalf("expected sensitive body content to be redacted, got: %q", got)
+	}
+	if got != "non-2xx response: status=429 body=[redacted]" {
+		t.Fatalf("sanitizeErrorText() = %q", got)
 	}
 }
 
@@ -333,12 +565,13 @@ func TestLogBatchErrorSummary(t *testing.T) {
 			{ArticleID: 1, Outcome: "", Error: "db timeout: connect"},
 			{ArticleID: 2, Outcome: "", Error: "db timeout: read"},
 			{ArticleID: 3, Outcome: "", Error: "schema mismatch: field x"},
+			{ArticleID: 5, Outcome: "", Error: `non-2xx response: status=429 body={"error":{"message":"sensitive"}}`},
 			{ArticleID: 4, Outcome: appextraction.ExecutionOutcomeAlreadyDone, Error: ""},
 		},
 	})
 
 	output := logBuffer.String()
-	if !strings.Contains(output, `"event":"app.scheduler.dispatch_batch_error_summary"`) || !strings.Contains(output, `"total_errors":3`) {
+	if !strings.Contains(output, `"event":"app.scheduler.dispatch_batch_error_summary"`) || !strings.Contains(output, `"total_errors":4`) {
 		t.Fatalf("expected summary line in output, got: %s", output)
 	}
 	if !strings.Contains(output, `"event":"app.scheduler.dispatch_batch_error_cause"`) || !strings.Contains(output, `"cause":"db timeout"`) {
@@ -352,6 +585,12 @@ func TestLogBatchErrorSummary(t *testing.T) {
 	}
 	if !strings.Contains(output, `"reaction":"item marked failed; batch continues"`) {
 		t.Fatalf("expected reaction contract in output, got: %s", output)
+	}
+	if strings.Contains(output, "sensitive") {
+		t.Fatalf("expected redacted cause, got: %s", output)
+	}
+	if !strings.Contains(output, `"cause":"non-2xx response: status=429 body=[redacted]"`) {
+		t.Fatalf("expected explicit redacted 429 cause, got: %s", output)
 	}
 	if !strings.Contains(output, `"sanitized_input":"{\"article_id\":3,\"outcome\":\"\"}"`) {
 		t.Fatalf("expected sanitized_input contract in output, got: %s", output)
@@ -372,7 +611,7 @@ func TestRunCycleWithLoggingIncludesCycleErrorCauseTop(t *testing.T) {
 		{ArticleID: 103, Error: "schema mismatch: field"},
 	}}}
 	logBuffer := bytes.NewBuffer(nil)
-	s, err := New(upstream, runner, logging.NewWithWriters(logBuffer, logBuffer), Config{PollInterval: time.Second, PageSize: 10, MaxPagesPerCycle: 2, DispatchConcurrency: 1, BatchSize: 10})
+	s, err := New(upstream, runner, logging.NewWithWriters(logBuffer, logBuffer), Config{PollInterval: time.Second, PageSize: 10, MaxPagesPerCycle: 2, DispatchConcurrency: 1, BatchSize: 10, RateLimitThreshold: 3, RateLimitCooldown: time.Millisecond})
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -399,7 +638,7 @@ func TestRunCycleWithLoggingIdle(t *testing.T) {
 	}}
 	runner := &fakeRunner{}
 	logBuffer := bytes.NewBuffer(nil)
-	s, err := New(upstream, runner, logging.NewWithWriters(logBuffer, logBuffer), Config{PollInterval: time.Second, PageSize: 10, MaxPagesPerCycle: 1, DispatchConcurrency: 1, BatchSize: 10})
+	s, err := New(upstream, runner, logging.NewWithWriters(logBuffer, logBuffer), Config{PollInterval: time.Second, PageSize: 10, MaxPagesPerCycle: 1, DispatchConcurrency: 1, BatchSize: 10, RateLimitThreshold: 3, RateLimitCooldown: time.Millisecond})
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}

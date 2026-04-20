@@ -5,10 +5,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -242,6 +244,237 @@ func TestClientExtract_Non2xxResponse(t *testing.T) {
 	client := newTestClient(t, srv.URL)
 	if _, err := client.Extract(context.Background(), in); err == nil {
 		t.Fatal("expected non-2xx error")
+	}
+}
+
+// TestClientExtract_RetryOn429WithRetryAfter verifies 429 responses with Retry-After are retried and can succeed.
+// It serves one 429 response with Retry-After followed by a valid successful payload.
+// It fails if retry behavior does not honor transient handling.
+func TestClientExtract_RetryOn429WithRetryAfter(t *testing.T) {
+	in := validInput(t)
+	resultJSON, err := json.Marshal(validResult(in.ArticleID))
+	if err != nil {
+		t.Fatalf("marshal result json: %v", err)
+	}
+
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		current := calls.Add(1)
+		if current == 1 {
+			w.Header().Set("Retry-After", "1")
+			http.Error(w, `{"error":{"message":"rate limited"}}`, http.StatusTooManyRequests)
+			return
+		}
+		writeChatResponse(t, w, string(resultJSON))
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv.URL)
+	client.sleepFn = func(ctx context.Context, _ time.Duration) error {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+			return nil
+		}
+	}
+	client.jitterFn = func(_ time.Duration) time.Duration { return 0 }
+
+	if _, err := client.Extract(context.Background(), in); err != nil {
+		t.Fatalf("expected retry success, got error: %v", err)
+	}
+	if got := calls.Load(); got != 2 {
+		t.Fatalf("unexpected call count: got %d want 2", got)
+	}
+}
+
+// TestClientExtract_RetryOn429WithoutRetryAfterUsesBackoff verifies 429 without Retry-After uses the backoff fallback path.
+// It serves one 429 response without Retry-After and then returns a valid payload.
+// It fails if no backoff wait is requested or retry is skipped.
+func TestClientExtract_RetryOn429WithoutRetryAfterUsesBackoff(t *testing.T) {
+	in := validInput(t)
+	resultJSON, err := json.Marshal(validResult(in.ArticleID))
+	if err != nil {
+		t.Fatalf("marshal result json: %v", err)
+	}
+
+	var calls atomic.Int32
+	var waited atomic.Int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		current := calls.Add(1)
+		if current == 1 {
+			http.Error(w, `{"error":{"message":"rate limit reached, please try again in 2s"}}`, http.StatusTooManyRequests)
+			return
+		}
+		writeChatResponse(t, w, string(resultJSON))
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv.URL)
+	client.sleepFn = func(ctx context.Context, d time.Duration) error {
+		waited.Store(int64(d))
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+			return nil
+		}
+	}
+	client.jitterFn = func(_ time.Duration) time.Duration { return 0 }
+
+	if _, err := client.Extract(context.Background(), in); err != nil {
+		t.Fatalf("expected retry success, got error: %v", err)
+	}
+	if got := calls.Load(); got != 2 {
+		t.Fatalf("unexpected call count: got %d want 2", got)
+	}
+	if waited.Load() <= 0 {
+		t.Fatal("expected positive backoff wait duration")
+	}
+}
+
+// TestClientExtract_ContextCancelDuringRetryWait verifies context cancellation aborts during retry wait.
+// It serves 429 continuously and cancels context from inside the wait function.
+// It fails if extraction continues retries after context cancellation.
+func TestClientExtract_ContextCancelDuringRetryWait(t *testing.T) {
+	in := validInput(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, `{"error":{"message":"retry later"}}`, http.StatusTooManyRequests)
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv.URL)
+	ctx, cancel := context.WithCancel(context.Background())
+	client.sleepFn = func(ctx context.Context, _ time.Duration) error {
+		cancel()
+		<-ctx.Done()
+		return ctx.Err()
+	}
+
+	_, err := client.Extract(ctx, in)
+	if err == nil {
+		t.Fatal("expected context cancellation error")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context canceled error, got: %v", err)
+	}
+}
+
+// TestClientExtract_MaxRetryExceeded verifies transient failures stop after max retry attempts with clear error.
+// It serves repeated 503 responses and configures a small retry budget.
+// It fails if retries exceed the configured limit or if returned error is ambiguous.
+func TestClientExtract_MaxRetryExceeded(t *testing.T) {
+	in := validInput(t)
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		http.Error(w, "upstream unavailable", http.StatusServiceUnavailable)
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv.URL)
+	client.retryMaxAttempts = 2
+	client.sleepFn = func(ctx context.Context, _ time.Duration) error {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+			return nil
+		}
+	}
+	client.jitterFn = func(_ time.Duration) time.Duration { return 0 }
+
+	_, err := client.Extract(context.Background(), in)
+	if err == nil {
+		t.Fatal("expected retry exhaustion error")
+	}
+	if !strings.Contains(err.Error(), "transient non-2xx response: status=503") {
+		t.Fatalf("unexpected error text: %v", err)
+	}
+	if got := calls.Load(); got != 2 {
+		t.Fatalf("unexpected call count: got %d want 2", got)
+	}
+}
+
+// TestClientExtract_RetryOn500 verifies transient HTTP 500 responses are retried.
+func TestClientExtract_RetryOn500(t *testing.T) {
+	in := validInput(t)
+	resultJSON, err := json.Marshal(validResult(in.ArticleID))
+	if err != nil {
+		t.Fatalf("marshal result json: %v", err)
+	}
+
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		current := calls.Add(1)
+		if current == 1 {
+			http.Error(w, "temporary internal error", http.StatusInternalServerError)
+			return
+		}
+		writeChatResponse(t, w, string(resultJSON))
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv.URL)
+	client.sleepFn = func(ctx context.Context, _ time.Duration) error {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+			return nil
+		}
+	}
+	client.jitterFn = func(_ time.Duration) time.Duration { return 0 }
+
+	if _, err := client.Extract(context.Background(), in); err != nil {
+		t.Fatalf("expected retry success after 500, got error: %v", err)
+	}
+	if got := calls.Load(); got != 2 {
+		t.Fatalf("unexpected call count: got %d want 2", got)
+	}
+}
+
+// TestClientExtract_RetryAfterHeaderNotCappedByBackoff verifies Retry-After duration is honored even when > backoff max.
+func TestClientExtract_RetryAfterHeaderNotCappedByBackoff(t *testing.T) {
+	in := validInput(t)
+	resultJSON, err := json.Marshal(validResult(in.ArticleID))
+	if err != nil {
+		t.Fatalf("marshal result json: %v", err)
+	}
+
+	var calls atomic.Int32
+	var waited atomic.Int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		current := calls.Add(1)
+		if current == 1 {
+			w.Header().Set("Retry-After", "30")
+			http.Error(w, `{"error":{"message":"rate limited"}}`, http.StatusTooManyRequests)
+			return
+		}
+		writeChatResponse(t, w, string(resultJSON))
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv.URL)
+	client.sleepFn = func(ctx context.Context, d time.Duration) error {
+		waited.Store(int64(d))
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+			return nil
+		}
+	}
+	client.jitterFn = func(_ time.Duration) time.Duration { return 0 }
+
+	if _, err := client.Extract(context.Background(), in); err != nil {
+		t.Fatalf("expected retry success, got error: %v", err)
+	}
+	if got := calls.Load(); got != 2 {
+		t.Fatalf("unexpected call count: got %d want 2", got)
+	}
+	if got := time.Duration(waited.Load()); got != 30*time.Second {
+		t.Fatalf("unexpected wait duration: got %s want %s", got, 30*time.Second)
 	}
 }
 

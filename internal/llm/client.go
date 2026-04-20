@@ -6,10 +6,15 @@ package llm
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"io"
+	"math/big"
 	"net/http"
+	"net/url"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -20,6 +25,7 @@ import (
 const defaultBaseURL = "https://api.openai.com/v1"
 
 var llmLogger = logging.New()
+var retryAfterSecondsPattern = regexp.MustCompile(`(?i)\b(?:retry|try again)\D+(\d+(?:\.\d+)?)\s*(ms|millisecond|milliseconds|s|sec|secs|second|seconds|m|min|mins|minute|minutes)?\b`)
 
 // Client is an infrastructure extractor that calls OpenAI Chat Completions.
 type Client struct {
@@ -27,6 +33,12 @@ type Client struct {
 	model      string
 	baseURL    string
 	httpClient *http.Client
+
+	retryInitialDelay time.Duration
+	retryMaxDelay     time.Duration
+	retryMaxAttempts  int
+	sleepFn           func(context.Context, time.Duration) error
+	jitterFn          func(time.Duration) time.Duration
 }
 
 // NewClient constructs a new OpenAI-backed extractor client.
@@ -56,6 +68,11 @@ func NewClient(apiKey, model, baseURL string, timeout time.Duration) (*Client, e
 		httpClient: &http.Client{
 			Timeout: timeout,
 		},
+		retryInitialDelay: 250 * time.Millisecond,
+		retryMaxDelay:     5 * time.Second,
+		retryMaxAttempts:  3,
+		sleepFn:           waitWithContext,
+		jitterFn:          boundedJitter,
 	}, nil
 }
 
@@ -90,37 +107,9 @@ func (c *Client) Extract(ctx context.Context, in extract.ExtractInput) (extract.
 		return extract.ExtractResult{}, fmt.Errorf("request build failure: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/chat/completions", bytes.NewReader(body))
+	responseBody, err := c.doWithRetry(ctx, body)
 	if err != nil {
-		return extract.ExtractResult{}, fmt.Errorf("request build failure: %w", err)
-	}
-	req.Header.Set("Authorization", "Bearer "+c.apiKey)
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return extract.ExtractResult{}, fmt.Errorf("http failure: %w", err)
-	}
-	defer func() {
-		if cerr := resp.Body.Close(); cerr != nil {
-			llmLogger.ErrorWithContract(ctx, "llm.http_response_body_close_failed", "llm/client", "failed to close http response body", cerr, logging.ErrorContract{
-				Failure:        "llm_response_body_close_failed",
-				Cause:          cerr.Error(),
-				SanitizedInput: sanitizeJSONLogInput("", nil),
-				Reaction:       "connection cleanup failed; request already completed",
-			},
-				logging.Field{Key: "operation", Value: "extract_chat_completions"},
-			)
-		}
-	}()
-
-	responseBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return extract.ExtractResult{}, fmt.Errorf("http failure: read response: %w", err)
-	}
-
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return extract.ExtractResult{}, fmt.Errorf("non-2xx response: status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(responseBody)))
+		return extract.ExtractResult{}, err
 	}
 
 	var decoded chatCompletionResponse
@@ -148,6 +137,214 @@ func (c *Client) Extract(ctx context.Context, in extract.ExtractInput) (extract.
 	}
 
 	return out, nil
+}
+
+func (c *Client) doWithRetry(ctx context.Context, body []byte) ([]byte, error) {
+	attempts := c.retryMaxAttempts
+	if attempts < 1 {
+		attempts = 1
+	}
+	lastErr := error(nil)
+
+	for attempt := 1; attempt <= attempts; attempt++ {
+		responseBody, retryDelay, err := c.doOnce(ctx, body, attempt)
+		if err == nil {
+			return responseBody, nil
+		}
+		lastErr = err
+		if retryDelay <= 0 || attempt == attempts {
+			break
+		}
+		if waitErr := c.sleepFn(ctx, retryDelay); waitErr != nil {
+			return nil, fmt.Errorf("http failure: retry wait canceled: %w", waitErr)
+		}
+	}
+	return nil, lastErr
+}
+
+func (c *Client) doOnce(ctx context.Context, body []byte, attempt int) ([]byte, time.Duration, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/chat/completions", bytes.NewReader(body))
+	if err != nil {
+		return nil, 0, fmt.Errorf("request build failure: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		if shouldRetryTransportError(ctx, err) {
+			return nil, c.nextBackoffDelay(attempt), fmt.Errorf("http failure: %w", err)
+		}
+		return nil, 0, fmt.Errorf("http failure: %w", err)
+	}
+	defer func() {
+		if cerr := resp.Body.Close(); cerr != nil {
+			llmLogger.ErrorWithContract(ctx, "llm.http_response_body_close_failed", "llm/client", "failed to close http response body", cerr, logging.ErrorContract{
+				Failure:        "llm_response_body_close_failed",
+				Cause:          cerr.Error(),
+				SanitizedInput: sanitizeJSONLogInput("", nil),
+				Reaction:       "connection cleanup failed; request already completed",
+			},
+				logging.Field{Key: "operation", Value: "extract_chat_completions"},
+			)
+		}
+	}()
+
+	responseBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, 0, fmt.Errorf("http failure: read response: %w", err)
+	}
+
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		return responseBody, 0, nil
+	}
+	if !shouldRetryHTTPStatus(resp.StatusCode) {
+		return nil, 0, fmt.Errorf("non-2xx response: status=%d body=%s", resp.StatusCode, sanitizeBodyForError(responseBody))
+	}
+
+	delay := c.computeRetryDelay(resp, responseBody, attempt)
+	return nil, delay, fmt.Errorf("transient non-2xx response: status=%d body=%s", resp.StatusCode, sanitizeBodyForError(responseBody))
+}
+
+func shouldRetryHTTPStatus(status int) bool {
+	return status == http.StatusTooManyRequests ||
+		status == http.StatusInternalServerError ||
+		status == http.StatusBadGateway ||
+		status == http.StatusServiceUnavailable ||
+		status == http.StatusGatewayTimeout
+}
+
+func shouldRetryTransportError(ctx context.Context, err error) bool {
+	if ctx.Err() != nil {
+		return false
+	}
+	if ue, ok := err.(*url.Error); ok && ue.Timeout() {
+		return true
+	}
+	type timeoutErr interface{ Timeout() bool }
+	if te, ok := err.(timeoutErr); ok && te.Timeout() {
+		return true
+	}
+	return false
+}
+
+func (c *Client) computeRetryDelay(resp *http.Response, responseBody []byte, attempt int) time.Duration {
+	if resp.StatusCode == http.StatusTooManyRequests {
+		if d, ok := parseRetryAfter(resp.Header.Get("Retry-After")); ok {
+			return d
+		}
+		if d, ok := parseOpenAIRetryDelay(responseBody); ok {
+			return d
+		}
+	}
+	return c.nextBackoffDelay(attempt)
+}
+
+func (c *Client) nextBackoffDelay(attempt int) time.Duration {
+	if attempt < 1 {
+		attempt = 1
+	}
+	base := c.retryInitialDelay
+	for i := 1; i < attempt; i++ {
+		base *= 2
+		if base >= c.retryMaxDelay {
+			base = c.retryMaxDelay
+			break
+		}
+	}
+	if base > c.retryMaxDelay {
+		base = c.retryMaxDelay
+	}
+	jitter := c.jitterFn(base)
+	return minDuration(c.retryMaxDelay, base+jitter)
+}
+
+func parseRetryAfter(value string) (time.Duration, bool) {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return 0, false
+	}
+	if sec, err := strconv.Atoi(trimmed); err == nil {
+		if sec <= 0 {
+			return 0, false
+		}
+		return time.Duration(sec) * time.Second, true
+	}
+	if ts, err := http.ParseTime(trimmed); err == nil {
+		wait := time.Until(ts)
+		if wait <= 0 {
+			return 0, false
+		}
+		return wait, true
+	}
+	return 0, false
+}
+
+func parseOpenAIRetryDelay(body []byte) (time.Duration, bool) {
+	match := retryAfterSecondsPattern.FindStringSubmatch(strings.TrimSpace(string(body)))
+	if len(match) < 2 {
+		return 0, false
+	}
+	amount, err := strconv.ParseFloat(match[1], 64)
+	if err != nil || amount <= 0 {
+		return 0, false
+	}
+	unit := "s"
+	if len(match) >= 3 && strings.TrimSpace(match[2]) != "" {
+		unit = strings.ToLower(strings.TrimSpace(match[2]))
+	}
+	switch unit {
+	case "ms", "millisecond", "milliseconds":
+		return time.Duration(amount * float64(time.Millisecond)), true
+	case "m", "min", "mins", "minute", "minutes":
+		return time.Duration(amount * float64(time.Minute)), true
+	default:
+		return time.Duration(amount * float64(time.Second)), true
+	}
+}
+
+func waitWithContext(ctx context.Context, d time.Duration) error {
+	if d <= 0 {
+		return nil
+	}
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
+func boundedJitter(base time.Duration) time.Duration {
+	if base <= 0 {
+		return 0
+	}
+	maxJitter := base / 5
+	if maxJitter <= 0 {
+		return 0
+	}
+	n, err := rand.Int(rand.Reader, big.NewInt(maxJitter.Nanoseconds()+1))
+	if err != nil {
+		return 0
+	}
+	return time.Duration(n.Int64())
+}
+
+func sanitizeBodyForError(body []byte) string {
+	trimmed := strings.TrimSpace(string(body))
+	if len(trimmed) > 256 {
+		trimmed = trimmed[:256]
+	}
+	return trimmed
+}
+
+func minDuration(a, b time.Duration) time.Duration {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 // firstContent extracts the first assistant content string from a chat-completions response.

@@ -17,6 +17,8 @@ const (
 	defaultBatchSize           = 20
 	defaultLogBatchIDs         = false
 	defaultLogFailedItems      = false
+	defaultRateLimitThreshold  = 3
+	defaultRateLimitCooldown   = 1500 * time.Millisecond
 )
 
 // Config defines runtime controls for the in-process scheduler.
@@ -29,6 +31,8 @@ type Config struct {
 	BatchSize           int
 	LogBatchIDs         bool
 	LogFailedItems      bool
+	RateLimitThreshold  int
+	RateLimitCooldown   time.Duration
 }
 
 // ParseConfigFromEnv reads scheduler settings from environment variables.
@@ -44,6 +48,8 @@ func ParseConfigFromEnv() (Config, error) {
 		BatchSize:           defaultBatchSize,
 		LogBatchIDs:         defaultLogBatchIDs,
 		LogFailedItems:      defaultLogFailedItems,
+		RateLimitThreshold:  defaultRateLimitThreshold,
+		RateLimitCooldown:   defaultRateLimitCooldown,
 	}
 
 	enabledRaw := os.Getenv("SCHEDULER_ENABLED")
@@ -116,6 +122,24 @@ func ParseConfigFromEnv() (Config, error) {
 			return Config{}, fmt.Errorf("parse SCHEDULER_LOG_BATCH_IDS: %w", err)
 		}
 		cfg.LogBatchIDs = logBatchIDs
+	}
+
+	rateLimitThresholdRaw := os.Getenv("SCHEDULER_RATE_LIMIT_THRESHOLD")
+	if rateLimitThresholdRaw != "" {
+		threshold, err := strconv.Atoi(rateLimitThresholdRaw)
+		if err != nil || threshold <= 0 {
+			return Config{}, fmt.Errorf("SCHEDULER_RATE_LIMIT_THRESHOLD must be > 0")
+		}
+		cfg.RateLimitThreshold = threshold
+	}
+
+	rateLimitCooldownMSRaw := os.Getenv("SCHEDULER_RATE_LIMIT_COOLDOWN_MS")
+	if rateLimitCooldownMSRaw != "" {
+		cooldownMS, err := strconv.Atoi(rateLimitCooldownMSRaw)
+		if err != nil || cooldownMS <= 0 {
+			return Config{}, fmt.Errorf("SCHEDULER_RATE_LIMIT_COOLDOWN_MS must be > 0")
+		}
+		cfg.RateLimitCooldown = time.Duration(cooldownMS) * time.Millisecond
 	}
 
 	return cfg, nil

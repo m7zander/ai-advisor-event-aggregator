@@ -178,6 +178,8 @@ Scheduler (`internal/app/scheduler`):
 - `SCHEDULER_MAX_PAGES_PER_CYCLE` (Default: `10`)
 - `SCHEDULER_DISPATCH_CONCURRENCY` (Default: `2`)
 - `SCHEDULER_BATCH_SIZE` (Default: `20`)
+- `SCHEDULER_RATE_LIMIT_THRESHOLD` (Default: `3`) — Anzahl als rate-limitiert klassifizierter Items pro Scheduler-Zyklus, ab der zyklusintern gedrosselt wird.
+- `SCHEDULER_RATE_LIMIT_COOLDOWN_MS` (Default: `1500`) — Cooldown zwischen Folge-Batches nach aktivierter Drosselung innerhalb desselben Zyklus.
 - `SCHEDULER_LOG_BATCH_IDS` (Default: `false`)
 - `SCHEDULER_LOG_FAILED_ITEMS` (Default: `false`)
 
@@ -225,3 +227,4 @@ go build ./...
 - DB-Migrationen laufen beim Startup.
 - Event-Clustering-Scheduler läuft periodisch mit `CLUSTER_SCHEDULE_INTERVAL_MINUTES`.
 - Optionaler Extraction-Scheduler läuft nur mit `SCHEDULER_ENABLED=true`.
+- Bei aktivierter Scheduler-Drosselung (Threshold erreicht) wird die effektive Batch-Concurrency für Folge-Batches im selben Zyklus reduziert und ein Cooldown zwischen Dispatches angewandt.
